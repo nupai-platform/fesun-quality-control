@@ -1,0 +1,49 @@
+# Example business-repository caller. Replace __QC_COMMIT_SHA__ with a full reviewed commit SHA.
+name: layered-regression
+on:
+  push: { branches: [main] }
+  schedule: [{ cron: "30 18 * * *" }]
+  workflow_dispatch:
+    inputs:
+      layer:
+        type: choice
+        options: [on-demand, release]
+        required: true
+      nightly_passed:
+        type: boolean
+        default: false
+        required: false
+permissions: { contents: read, issues: write }
+jobs:
+  main:
+    if: ${{ github.event_name == 'push' }}
+    uses: houzhenying226-jpg/fesun-quality-control/.github/workflows/reusable-main-regression.yml@__QC_COMMIT_SHA__
+    with: { project: nupai-store, head_sha: "${{ github.sha }}", test_glob: "testing/regression/**/*.spec.ts" }
+    secrets:
+      E2E_BASE_URL: ${{ secrets.STORE_E2E_BASE_URL }}
+      E2E_USERNAME: ${{ secrets.STORE_E2E_USERNAME }}
+      E2E_PASSWORD: ${{ secrets.STORE_E2E_PASSWORD }}
+  nightly:
+    if: ${{ github.event_name == 'schedule' }}
+    uses: houzhenying226-jpg/fesun-quality-control/.github/workflows/reusable-nightly-spines.yml@__QC_COMMIT_SHA__
+    with: { project: nupai-store, head_sha: "${{ github.sha }}", test_glob: "testing/cross-system/**/*.spec.ts" }
+    secrets:
+      E2E_BASE_URL: ${{ secrets.STORE_E2E_BASE_URL }}
+      E2E_USERNAME: ${{ secrets.STORE_E2E_USERNAME }}
+      E2E_PASSWORD: ${{ secrets.STORE_E2E_PASSWORD }}
+  on-demand:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.layer == 'on-demand' }}
+    uses: houzhenying226-jpg/fesun-quality-control/.github/workflows/reusable-on-demand-e2e.yml@__QC_COMMIT_SHA__
+    with: { project: nupai-store, head_sha: "${{ github.sha }}", test_glob: "testing/cross-system/**/*.spec.ts" }
+    secrets:
+      E2E_BASE_URL: ${{ secrets.STORE_E2E_BASE_URL }}
+      E2E_USERNAME: ${{ secrets.STORE_E2E_USERNAME }}
+      E2E_PASSWORD: ${{ secrets.STORE_E2E_PASSWORD }}
+  release:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.layer == 'release' }}
+    uses: houzhenying226-jpg/fesun-quality-control/.github/workflows/reusable-release-gate.yml@__QC_COMMIT_SHA__
+    with: { project: nupai-store, head_sha: "${{ github.sha }}", test_glob: "testing/release/**/*.spec.ts", nightly_passed: "${{ inputs.nightly_passed }}" }
+    secrets:
+      E2E_BASE_URL: ${{ secrets.STORE_E2E_BASE_URL }}
+      E2E_USERNAME: ${{ secrets.STORE_E2E_USERNAME }}
+      E2E_PASSWORD: ${{ secrets.STORE_E2E_PASSWORD }}

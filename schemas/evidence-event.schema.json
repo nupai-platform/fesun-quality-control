@@ -1,52 +1,84 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://fesun.quality/schemas/evidence-event.schema.json",
-  "title": "FESUN Evidence Event v1.1",
-  "description": "由 Playwright 测试通过 test.info().attach('evidence',...) 落盘的原始证据。禁止携带任何布尔判定字段(如 backend_verified)。判定由 verdict-gate 独立复判。",
+  "title": "FESUN Evidence Event v1.1.1",
+  "description": "机器封装的原始证据。核心 Oracle 必须由 trusted_http_probe 或 contract_replay 独立观察。",
   "type": "object",
-  "required": ["evidence_type", "raw_response"],
+  "required": [
+    "schema_version",
+    "event_id",
+    "assertion_id",
+    "evidence_type",
+    "collector_kind",
+    "system",
+    "record_id",
+    "captured_at",
+    "raw_response",
+    "raw_response_sha256",
+    "provenance"
+  ],
   "additionalProperties": false,
   "properties": {
+    "schema_version": { "type": "number", "const": 1.1 },
+    "event_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "assertion_id": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]{2,80}$" },
     "evidence_type": {
       "type": "string",
-      "enum": [
-        "backend_query",
-        "network_response",
-        "cross_system_query",
-        "duplicate_count",
-        "reload_state",
-        "counterfactual"
-      ]
+      "enum": ["backend_query", "network_response", "cross_system_query", "reload_state", "contract_replay"]
+    },
+    "collector_kind": {
+      "type": "string",
+      "enum": ["playwright_attachment", "trusted_http_probe", "contract_replay"]
     },
     "system": {
       "type": "string",
       "enum": ["nupai-crm", "nupai-store", "nupai-mos", "fesun-platform"]
     },
-    "record_id": {
-      "type": "string",
-      "description": "目标记录业务主键 / ID。必须与操作对象一致,禁止使用未知列表项。"
-    },
+    "record_id": { "type": "string", "minLength": 3, "maxLength": 200 },
+    "captured_at": { "type": "string", "format": "date-time" },
     "request": {
       "type": "object",
+      "required": ["url", "method", "status"],
       "additionalProperties": false,
       "properties": {
-        "url": { "type": "string" },
-        "method": { "type": "string" },
-        "status": { "type": "number" },
-        "payload": {}
+        "url": { "type": "string", "format": "uri" },
+        "method": { "type": "string", "enum": ["GET", "POST", "PATCH", "PUT", "DELETE"] },
+        "status": { "type": "integer", "minimum": 100, "maximum": 599 }
       }
     },
     "raw_response": {
-      "description": "后端原始响应体,原样落盘,不做任何加工或判定。",
       "type": ["object", "array", "string", "number", "boolean", "null"]
     },
-    "asserted_field": {
-      "type": "string",
-      "description": "本条证据要复判的字段路径(点分),对应 bug-packet.expected_business_result.assertions 的键。"
-    },
-    "expected_from_packet": {
-      "description": "期望值来源必须是 bug-packet,仅作追溯记录;verdict-gate 以 packet 为准而非此字段。",
-      "type": ["string", "number", "boolean", "null"]
+    "raw_response_sha256": { "$ref": "#/definitions/sha256" },
+    "redactions": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "run_id",
+        "repo",
+        "base_sha",
+        "head_sha",
+        "qc_sha",
+        "packet_sha256",
+        "test_sha256",
+        "environment_id",
+        "correlation_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "base_sha": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" },
+        "head_sha": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" },
+        "qc_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "packet_sha256": { "$ref": "#/definitions/sha256" },
+        "test_sha256": { "$ref": "#/definitions/sha256" },
+        "environment_id": { "type": "string", "minLength": 3 },
+        "correlation_id": { "type": "string", "minLength": 3, "maxLength": 200 }
+      }
     }
+  },
+  "definitions": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
   }
 }

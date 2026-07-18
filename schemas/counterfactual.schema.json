@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FESUN Counterfactual Result v1.1.1",
+  "type": "object",
+  "required": [
+    "schema_version", "level", "baseline_failed", "fixed_passed",
+    "test_sha256", "observed_failure_signature", "reason_code"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "number", "const": 1.1 },
+    "level": { "type": "string", "enum": ["CF-1", "CF-2", "CF-3"] },
+    "baseline_failed": { "type": "boolean" },
+    "fixed_passed": { "type": "boolean" },
+    "test_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "observed_failure_signature": { "type": "string", "minLength": 3 },
+    "reason_code": { "type": "string", "minLength": 3 }
+  }
+}

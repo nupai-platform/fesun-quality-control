@@ -1,0 +1,20 @@
+name: acceptance-gate
+on: { pull_request: { types: [opened, synchronize, reopened, ready_for_review] } }
+permissions: { contents: read }
+jobs:
+  acceptance-gate:
+    uses: houzhenying226-jpg/fesun-quality-control/.github/workflows/reusable-pr-gate.yml@__QC_COMMIT_SHA__
+    with:
+      project: fesun-platform
+      bug_packet_path: testing/acceptance/current/bug-packet.yaml
+      test_glob: testing/acceptance/current/**/*.spec.ts
+      environment_id: platform-staging
+      base_sha: ${{ github.event.pull_request.base.sha }}
+      head_sha: ${{ github.event.pull_request.head.sha }}
+    secrets:
+      E2E_BASE_URL: ${{ secrets.PLATFORM_E2E_BASE_URL }}
+      E2E_USERNAME: ${{ secrets.PLATFORM_E2E_USERNAME }}
+      E2E_PASSWORD: ${{ secrets.PLATFORM_E2E_PASSWORD }}
+      E2E_READ_TOKEN: ${{ secrets.PLATFORM_E2E_READ_TOKEN }}
+      E2E_ALLOWED_HOSTS: ${{ secrets.PLATFORM_E2E_ALLOWED_HOSTS }}
+      QC_ALERT_WEBHOOK_URL: ${{ secrets.FESUN_QC_ALERT_WEBHOOK_URL }}

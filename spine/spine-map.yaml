@@ -17,7 +17,7 @@ spines:
     criticality: critical
     systems: [nupai-crm, fesun-platform]
     status: skeleton
-    segments: []
+    segments: {}
 
   SPINE-02:
     name: 门店履约(订单→预约→量体→状态同步)
@@ -28,9 +28,10 @@ spines:
       SEG-02A:
         name: CRM订单生成Store任务
         systems: [nupai-crm, nupai-store]
-        contracts: [crm.order.created, store.task.created]
+        contracts: [crm.order.created, store.task.created, store.order.detail-label]
         tests:
           - testing/contracts/order-created.spec.ts
+          - testing/acceptance/bugs/STO-190/STO-190.spec.ts
       SEG-02B:
         name: Store预约并进入量体
         systems: [nupai-store]
@@ -49,6 +50,7 @@ spines:
         contracts: [store.task.completed, platform.progress.updated]
         tests:
           - testing/cross-system/spine-02/seg-02d.spec.ts
+          - testing/acceptance/bugs/STO-191/STO-191.spec.ts
       SEG-02E:
         name: 重新登录后各系统状态一致
         systems: [nupai-store, fesun-platform, nupai-crm]
@@ -61,25 +63,25 @@ spines:
     criticality: critical
     systems: [fesun-platform, nupai-store]
     status: skeleton
-    segments: []
+    segments: {}
 
   SPINE-04:
     name: 交付闭环
     criticality: critical
     systems: [fesun-platform, nupai-store, nupai-crm]
     status: skeleton
-    segments: []
+    segments: {}
 
   SPINE-05:
     name: 售后闭环
     criticality: critical
     systems: [nupai-crm, nupai-store, fesun-platform]
     status: skeleton
-    segments: []
+    segments: {}
 
   SPINE-06:
     name: 内容生产(Platform→MOS)
     criticality: standard
     systems: [fesun-platform, nupai-mos]
     status: skeleton
-    segments: []
+    segments: {}

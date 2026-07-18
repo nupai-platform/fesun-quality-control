@@ -1,0 +1,38 @@
+schema_version: 1.1
+safety:
+  max_retries: 2
+  retry_cannot_turn_fail_into_pass: true
+  executing_ttl_minutes: 30
+  evidence_ttl_minutes: 15
+  final_verdict_timeout_minutes: 45
+budget:
+  max_cost_usd: 2
+  max_parallel_runs: 1
+  max_api_calls: 200
+artifacts:
+  retention_days: 14
+  access: restricted
+  redact_keys:
+    - authorization
+    - cookie
+    - password
+    - secret
+    - token
+data_isolation:
+  namespace_prefix: e2e_
+  default_expiry_hours: 72
+  cleanup_debt_hard_limit: 100
+  run2_requires_fresh_uuid: true
+state_machine:
+  success_path:
+    - RECEIVED
+    - PRECHECKED
+    - RISK_CLASSIFIED
+    - IMPACT_ANALYZED
+    - TEST_IMPLEMENTED
+    - EXECUTING
+    - EVIDENCE_COLLECTED
+    - VERDICT_COMPUTED
+    - DONE
+  terminal_states: [DONE, FAIL, BLOCKED, PARTIAL, MANUAL_REVIEW]
+  failure_classifications: [PRODUCT_FAILURE, ENVIRONMENT, INSUFFICIENT_EVIDENCE, FLAKY]

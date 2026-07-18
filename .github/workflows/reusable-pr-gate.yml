@@ -1,150 +1,322 @@
-# FESUN 可复用 PR 验收门禁 v1.1
-#
-# 业务仓库调用方式(必须锁 tag,禁止 @main):
-#   jobs:
-#     acceptance:
-#       uses: houzhenying226-jpg/fesun-quality-control/.github/workflows/reusable-pr-gate.yml@v1.1.0
-#       with:
-#         project: nupai-store
-#         bug_packet_path: testing/acceptance/bugs/STO-186/bug-packet.yaml
-#         base_sha: ${{ github.event.pull_request.base.sha }}
-#         head_sha: ${{ github.event.pull_request.head.sha }}
-#       secrets: inherit
-#
-# 唯一 Required Check 名称: acceptance-gate / final-verdict
-# PR 阶段只跑:风险分级 + 弱断言 + 业务代码修改 + Bug定点/契约测试 + 证据/裁判闸门。
-# 重型跨系统 E2E 不在 PR 跑(移至 main 后 / nightly),除非 PR 打 run-e2e 标签。
-
 name: reusable-pr-gate
 
 on:
   workflow_call:
     inputs:
-      project:
-        required: true
-        type: string
-      bug_packet_path:
-        required: true
-        type: string
-      base_sha:
-        required: false
-        type: string
-        default: ""
-      head_sha:
-        required: false
-        type: string
-        default: ""
-      qc_ref:
-        description: "治理仓库版本(默认 v1.1.0,禁止用 main)"
-        required: false
-        type: string
-        default: "v1.1.0"
+      project: { required: true, type: string }
+      bug_packet_path: { required: true, type: string }
+      test_glob: { required: true, type: string }
+      environment_id: { required: true, type: string }
+      base_sha: { required: true, type: string }
+      head_sha: { required: true, type: string }
     secrets:
-      E2E_BASE_URL:
-        required: false
-      E2E_USERNAME:
-        required: false
-      E2E_PASSWORD:
-        required: false
+      E2E_BASE_URL: { required: false }
+      E2E_USERNAME: { required: false }
+      E2E_PASSWORD: { required: false }
+      E2E_READ_TOKEN: { required: false }
+      E2E_ALLOWED_HOSTS: { required: false }
+      QC_ALERT_WEBHOOK_URL: { required: false }
+
+permissions:
+  contents: read
 
 jobs:
-  final-verdict:
-    name: final-verdict
+  candidate-test:
+    name: candidate-test
     runs-on: ubuntu-latest
-    timeout-minutes: 45          # 防僵尸 check 锁死合并
+    timeout-minutes: 35
+    permissions:
+      contents: read
     steps:
-      - name: Checkout 业务仓库(全历史,供 diff)
-        uses: actions/checkout@v4
+      - name: Checkout exact candidate head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ inputs.head_sha }}
           fetch-depth: 0
 
-      - name: Checkout 治理内核(锁版本)
-        uses: actions/checkout@v4
+      - name: Checkout immutable QC workflow source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          repository: houzhenying226-jpg/fesun-quality-control
-          ref: ${{ inputs.qc_ref }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: .qc
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "20"
+          node-version: "22"
+          cache: npm
 
-      - name: 安装治理内核依赖
-        working-directory: .qc
-        run: npm ci || npm install
+      - name: Install exact dependencies
+        run: |
+          npm ci
+          npm ci --prefix .qc
 
-      - name: 安装业务仓库依赖
-        run: npm ci || npm install
+      - name: Validate candidate workflow supply chain
+        run: node --import tsx .qc/scripts/validate-workflows.ts
 
-      # ---- 1. 事实源 + 风险分级(缺事实源 → BLOCKED) ----
-      - name: 风险分级
+      - name: Derive immutable Packet hash
+        id: packet
+        env:
+          QC_PACKET_PATH: ${{ inputs.bug_packet_path }}
+        run: |
+          node --input-type=module -e "import{createHash}from'node:crypto';import{readFileSync}from'node:fs';import{appendFileSync}from'node:fs';appendFileSync(process.env.GITHUB_OUTPUT,'sha256='+createHash('sha256').update(readFileSync(process.env.QC_PACKET_PATH)).digest('hex')+'\n')"
+
+      - name: Snapshot protected business files before test execution
+        run: node --import tsx .qc/scripts/detect-business-code-change.ts --mode runtime-snapshot --output artifacts/worktree-before.json
+
+      - name: Validate Packet
+        continue-on-error: true
+        env:
+          QC_PACKET_PATH: ${{ inputs.bug_packet_path }}
+        run: node --import tsx .qc/scripts/validate-packet.ts --packet "$QC_PACKET_PATH"
+
+      - name: Classify risk from Packet and exact PR diff
         id: risk
         continue-on-error: true
+        env:
+          QC_PACKET_PATH: ${{ inputs.bug_packet_path }}
+          QC_BASE_SHA: ${{ inputs.base_sha }}
+          QC_HEAD_SHA: ${{ inputs.head_sha }}
         run: |
-          node --import tsx .qc/scripts/classify-risk.ts \
-            --packet "${{ inputs.bug_packet_path }}" \
-            --base "${{ inputs.base_sha }}" --head "${{ inputs.head_sha }}" || true
-          cp -f artifacts/risk.json .qc/artifacts/ 2>/dev/null || true
+          set +e
+          node --import tsx .qc/scripts/classify-risk.ts --packet "$QC_PACKET_PATH" --base "$QC_BASE_SHA" --head "$QC_HEAD_SHA"
+          status=$?
+          set -e
+          node --input-type=module -e "import{readFileSync,appendFileSync}from'node:fs';const r=JSON.parse(readFileSync('artifacts/risk.json'));appendFileSync(process.env.GITHUB_OUTPUT,'profile='+(r.final_risk??'MANUAL_REVIEW')+'\n')"
+          exit "$status"
 
-      # ---- 2. 静态机器闸门 ----
-      - name: 业务代码零修改检查
-        continue-on-error: true
-        run: node --import tsx .qc/scripts/detect-business-code-change.ts --base "${{ inputs.base_sha }}" --head "${{ inputs.head_sha }}" || true
-
-      - name: 弱断言扫描
-        continue-on-error: true
-        run: node --import tsx .qc/scripts/detect-weak-assertions.ts "testing/**/*.spec.ts" || true
-
-      - name: 孤儿集成检查
-        continue-on-error: true
-        run: node --import tsx .qc/scripts/detect-orphan-integrations.ts --root . --map .qc/spine/code-impact-map.yaml || true
-
-      # ---- 3. 运行测试(两次,产出 report.json + evidence-raw) ----
-      - name: 安装 Playwright 浏览器
-        run: npx playwright install --with-deps chromium || true
-
-      - name: RUN 1
+      - name: Scan weak assertions
         continue-on-error: true
         env:
-          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
-          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
-          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          QC_TEST_GLOB: ${{ inputs.test_glob }}
+        run: node --import tsx .qc/scripts/detect-weak-assertions.ts "$QC_TEST_GLOB"
+
+      - name: Scan orphan integrations
+        continue-on-error: true
+        run: node --import tsx .qc/scripts/detect-orphan-integrations.ts --root . --map .qc/spine/code-impact-map.yaml
+
+      - name: Create trusted execution envelope
+        run: |
+          mkdir -p artifacts
+          node --input-type=module -e "import{writeFileSync}from'node:fs';writeFileSync('artifacts/execution-state.json',JSON.stringify({state:'EXECUTING',state_entered_at:new Date().toISOString(),retry_count:Number(process.env.GITHUB_RUN_ATTEMPT)-1,cost_usd:0,api_calls:0,parallel_runs:1,cleanup_debt:0},null,2))"
+
+      - name: Install Chromium
+        continue-on-error: true
+        run: npx playwright install --with-deps chromium
+
+      - name: Run 1 with machine evidence reporter
+        continue-on-error: true
+        env:
+          QC_TEST_GLOB: ${{ inputs.test_glob }}
+          QC_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-1
+          QC_BASE_SHA: ${{ inputs.base_sha }}
+          QC_HEAD_SHA: ${{ inputs.head_sha }}
+          QC_SHA: ${{ job.workflow_sha }}
+          QC_PACKET_SHA256: ${{ steps.packet.outputs.sha256 }}
+          QC_ENVIRONMENT_ID: ${{ inputs.environment_id }}
+          STORE_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          STORE_E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          STORE_E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          CRM_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          CRM_E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          CRM_E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          MOS_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          MOS_E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          MOS_E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          PLATFORM_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          PLATFORM_E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          PLATFORM_E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
         run: |
           mkdir -p artifacts/run-1
-          npx playwright test --project=chromium \
-            --reporter=json,./.qc/reporters/playwright-evidence-reporter.ts \
-            2> artifacts/run-1/stderr.log > artifacts/run-1/report.json || true
-          cp -f artifacts/run-1/report.json artifacts/report.json 2>/dev/null || true
+          set +e
+          npx playwright test "$QC_TEST_GLOB" --project=chromium --reporter=json,./.qc/reporters/playwright-evidence-reporter.ts > artifacts/run-1/report.json
+          status=$?
+          set -e
+          cp artifacts/run-1/report.json artifacts/report.json
+          exit "$status"
 
-      - name: RUN 2
+      - name: Run 2 with fresh process for STANDARD+
+        if: ${{ steps.risk.outputs.profile != 'FAST' }}
         continue-on-error: true
         env:
-          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
-          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
-          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          QC_TEST_GLOB: ${{ inputs.test_glob }}
+          QC_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-2
+          QC_BASE_SHA: ${{ inputs.base_sha }}
+          QC_HEAD_SHA: ${{ inputs.head_sha }}
+          QC_SHA: ${{ job.workflow_sha }}
+          QC_PACKET_SHA256: ${{ steps.packet.outputs.sha256 }}
+          QC_ENVIRONMENT_ID: ${{ inputs.environment_id }}
+          QC_ARTIFACT_DIR: artifacts/run-2
+          STORE_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          STORE_E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          STORE_E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          CRM_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          CRM_E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          CRM_E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          MOS_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          MOS_E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          MOS_E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          PLATFORM_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          PLATFORM_E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          PLATFORM_E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
         run: |
           mkdir -p artifacts/run-2
-          npx playwright test --project=chromium \
-            --reporter=json \
-            > artifacts/run-2/report.json || true
+          npx playwright test "$QC_TEST_GLOB" --project=chromium --reporter=json,./.qc/reporters/playwright-evidence-reporter.ts > artifacts/run-2/report.json
 
-      # ---- 4. 证据闸门 ----
-      - name: 证据闸门
-        continue-on-error: true
-        run: node --import tsx .qc/scripts/evidence-gate.ts --profile "$(node -e "try{console.log(require('./artifacts/risk.json').final_risk||'STANDARD')}catch(e){console.log('STANDARD')}")" || true
-
-      # ---- 5. 唯一裁判(这一步的退出码决定 Required Check 成败) ----
-      - name: 计算最终裁定
-        run: |
-          node --import tsx .qc/scripts/verdict-gate.ts --packet "${{ inputs.bug_packet_path }}"
-
-      - name: 上传证据产物
+      - name: Verify test worker did not mutate business code
         if: always()
-        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        run: node --import tsx .qc/scripts/detect-business-code-change.ts --mode runtime-verify --snapshot artifacts/worktree-before.json
+
+      - name: Copy immutable Packet into handoff
+        if: always()
+        env:
+          QC_PACKET_PATH: ${{ inputs.bug_packet_path }}
+        run: cp -- "$QC_PACKET_PATH" artifacts/bug-packet.yaml
+
+      - name: Upload candidate machine artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: acceptance-artifacts-${{ inputs.project }}
-          path: |
-            artifacts/**
-            playwright-report/**
+          name: candidate-${{ inputs.project }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/
+          retention-days: 1
+          if-no-files-found: error
+
+  final-verdict:
+    name: final-verdict
+    if: ${{ always() }}
+    needs: [candidate-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: fesun-staging-acceptance
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout immutable QC workflow source only
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .qc
+
+      - name: Checkout candidate Packet without executing candidate code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.head_sha }}
+          path: .candidate
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install immutable QC dependencies
+        run: npm ci --prefix .qc
+
+      - name: Download candidate machine artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: candidate-${{ inputs.project }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts
+
+      - name: Replace handoff Packet with exact candidate-head Packet
+        if: always()
+        env:
+          QC_INPUT_PACKET_PATH: ${{ inputs.bug_packet_path }}
+        run: |
+          case "$QC_INPUT_PACKET_PATH" in
+            /*|../*|*/../*|*' '* ) echo 'unsafe Packet path' >&2; exit 1 ;;
+          esac
+          mkdir -p artifacts
+          cp -- ".candidate/$QC_INPUT_PACKET_PATH" artifacts/bug-packet.yaml
+
+      - name: Revalidate Packet in trusted job
+        if: always()
+        continue-on-error: true
+        run: node --import tsx .qc/scripts/validate-packet.ts --packet artifacts/bug-packet.yaml
+
+      - name: Enforce execution budget and TTL
+        if: always()
+        continue-on-error: true
+        run: node --import tsx .qc/scripts/execution-gate.ts --state artifacts/execution-state.json
+
+      - name: Collect independent read-only Oracle evidence
+        if: always()
+        continue-on-error: true
+        env:
+          QC_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-1
+          QC_BASE_SHA: ${{ inputs.base_sha }}
+          QC_HEAD_SHA: ${{ inputs.head_sha }}
+          QC_SHA: ${{ job.workflow_sha }}
+          QC_ENVIRONMENT_ID: ${{ inputs.environment_id }}
+          STORE_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          STORE_E2E_ALLOWED_HOSTS: ${{ secrets.E2E_ALLOWED_HOSTS }}
+          STORE_E2E_READ_TOKEN: ${{ secrets.E2E_READ_TOKEN }}
+          CRM_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          CRM_E2E_ALLOWED_HOSTS: ${{ secrets.E2E_ALLOWED_HOSTS }}
+          CRM_E2E_READ_TOKEN: ${{ secrets.E2E_READ_TOKEN }}
+          MOS_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          MOS_E2E_ALLOWED_HOSTS: ${{ secrets.E2E_ALLOWED_HOSTS }}
+          MOS_E2E_READ_TOKEN: ${{ secrets.E2E_READ_TOKEN }}
+          PLATFORM_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          PLATFORM_E2E_ALLOWED_HOSTS: ${{ secrets.E2E_ALLOWED_HOSTS }}
+          PLATFORM_E2E_READ_TOKEN: ${{ secrets.E2E_READ_TOKEN }}
+        run: node --import tsx .qc/scripts/collect-oracle-evidence.ts --packet artifacts/bug-packet.yaml
+
+      - name: Replay trusted CF-2 contract when declared
+        if: always()
+        continue-on-error: true
+        env:
+          STORE_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          STORE_E2E_ALLOWED_HOSTS: ${{ secrets.E2E_ALLOWED_HOSTS }}
+          STORE_E2E_READ_TOKEN: ${{ secrets.E2E_READ_TOKEN }}
+          CRM_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          CRM_E2E_ALLOWED_HOSTS: ${{ secrets.E2E_ALLOWED_HOSTS }}
+          CRM_E2E_READ_TOKEN: ${{ secrets.E2E_READ_TOKEN }}
+          MOS_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          MOS_E2E_ALLOWED_HOSTS: ${{ secrets.E2E_ALLOWED_HOSTS }}
+          MOS_E2E_READ_TOKEN: ${{ secrets.E2E_READ_TOKEN }}
+          PLATFORM_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          PLATFORM_E2E_ALLOWED_HOSTS: ${{ secrets.E2E_ALLOWED_HOSTS }}
+          PLATFORM_E2E_READ_TOKEN: ${{ secrets.E2E_READ_TOKEN }}
+        run: node --import tsx .qc/scripts/run-counterfactual.ts --packet artifacts/bug-packet.yaml
+
+      - name: Verify evidence integrity and independent coverage
+        if: always()
+        continue-on-error: true
+        env:
+          QC_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-1
+          QC_BASE_SHA: ${{ inputs.base_sha }}
+          QC_HEAD_SHA: ${{ inputs.head_sha }}
+          QC_SHA: ${{ job.workflow_sha }}
+          QC_ENVIRONMENT_ID: ${{ inputs.environment_id }}
+        run: node --import tsx .qc/scripts/evidence-gate.ts --packet artifacts/bug-packet.yaml
+
+      - name: Compute sole final verdict
+        if: always()
+        env:
+          QC_SHA: ${{ job.workflow_sha }}
+        run: node --import tsx .qc/scripts/verdict-gate.ts --packet artifacts/bug-packet.yaml
+
+      - name: Alert failure classification
+        if: always()
+        continue-on-error: true
+        env:
+          QC_ALERT_WEBHOOK_URL: ${{ secrets.QC_ALERT_WEBHOOK_URL }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: node --import tsx .qc/scripts/emit-alert.ts
+
+      - name: Upload final evidence packet
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: acceptance-${{ inputs.project }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/
           retention-days: 14
+          if-no-files-found: error

@@ -1,54 +1,53 @@
 schema_version: 1.1
-
 bug:
   id: STO-186
   title: 量体任务完成后刷新恢复待处理
-  original_description: >
-    门店用户点击标记完成后,当前页面显示已完成,
-    但刷新后恢复为待处理。
+  original_description: "门店用户点击标记完成后，当前页面显示已完成，但刷新后恢复为待处理。"
   source:
     type: user_report
+    uri: "user-report://store/STO-186"
     reporter: 振英
-    ai_may_edit: false
-
+    content_sha256: 1a70d153b02eaf861a806ec000688be1876acecb9e27eb162a878d79edeaab4a
 expected_business_result:
   owner: 振英
-  confirmed_at: "2026-07-18"
-  ai_may_edit: false
+  confirmed_at: "2026-07-18T00:00:00+08:00"
+  source_uri: "approval://store/STO-186/oracle"
+  assertions_sha256: 8bdc758aca05ba08ba0a838ee9582df37ca3ce2b5e67a244a628854e11d3d568
   assertions:
-    status: completed
-    duplicate_task_count: 0
-
+    - id: measurement-status
+      selector: /status
+      operator: equals
+      expected: completed
+      required_collectors: [playwright_attachment, trusted_http_probe]
+      min_independent_sources: 2
+      probe: { method: GET, path_template: "/api/tasks/{record_id}" }
+    - id: duplicate-task-count
+      selector: /duplicate_task_count
+      operator: equals
+      expected: 0
+      required_collectors: [playwright_attachment, trusted_http_probe]
+      min_independent_sources: 2
+      probe: { method: GET, path_template: "/api/tasks/{record_id}/verification" }
 environment:
   target_system: nupai-store
   base_url_env: STORE_E2E_BASE_URL
+  expected_environment_id: store-staging
+  environment_id_header: x-fesun-environment
+  allowed_hosts_env: STORE_E2E_ALLOWED_HOSTS
   account:
     username_env: STORE_E2E_USERNAME
     password_env: STORE_E2E_PASSWORD
+    token_env: STORE_E2E_READ_TOKEN
     role: store_manager
-
 git:
   repo: houzhenying226-jpg/nupai-store
-  base_commit: abc123
-  fixed_commit: def456
-
-risk_claim:
-  declared_level: STANDARD
-
+risk_claim: { declared_level: STANDARD }
 business_scope:
-  affected_contracts:
-    - store.measurement.completed
-    - platform.progress.updated
-  affected_spines:
-    - SPINE-02
-  affected_segments:
-    - SEG-02C
-    - SEG-02D
-
-counterfactual:
-  level: CF-2
-  reason_code: cross_system
-
+  affected_contracts: [store.measurement.completed, store.task.status]
+  affected_spines: [SPINE-02]
+  affected_segments: [SEG-02C]
+counterfactual: { level: CF-1, reason_code: same_test_old_commit, expected_failure_signature: STATUS_PENDING_AFTER_RELOAD }
 test_data:
   namespace: e2e_STO_186
   expires_after_hours: 72
+  cleanup_debt_limit: 10

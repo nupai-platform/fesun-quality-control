@@ -1,0 +1,41 @@
+name: reusable-main-regression
+on:
+  workflow_call:
+    inputs:
+      project: { required: true, type: string }
+      head_sha: { required: true, type: string }
+      test_glob: { required: true, type: string }
+    secrets:
+      E2E_BASE_URL: { required: true }
+      E2E_USERNAME: { required: true }
+      E2E_PASSWORD: { required: true }
+permissions:
+  contents: read
+jobs:
+  main-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: fesun-staging-acceptance
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with: { ref: "${{ inputs.head_sha }}" }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: "22", cache: npm }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Run affected-system and adjacent-segment regression
+        env:
+          QC_TEST_GLOB: ${{ inputs.test_glob }}
+          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+        run: |
+          mkdir -p artifacts/main
+          npx playwright test "$QC_TEST_GLOB" --project=chromium --reporter=json > artifacts/main/report.json
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: main-regression-${{ inputs.project }}-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 14
+          if-no-files-found: error
