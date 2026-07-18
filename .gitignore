@@ -3,6 +3,7 @@ dist/
 artifacts/
 playwright-report/
 test-results/
+coverage/
 *.log
 .env
 .env.*

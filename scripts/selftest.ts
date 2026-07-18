@@ -1,172 +1,132 @@
-/**
- * selftest.ts v1.1
- *
- * 不启动浏览器,合成产物证明 verdict-gate 的"物证反推"确实生效:
- *   场景 A(正确证据):后端 status=completed → 期望 PASS
- *   场景 B(错误证据):后端 status=pending   → 期望 FAIL(PRODUCT_BUG)
- *   场景 C(伪造判定):证据里塞 backend_verified:true → evidence-gate 期望拒绝
- *
- * 这是 Day 0 "让机器闸门先跑通"的自证。退出码非 0 表示自测未达预期。
- */
-import { execSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
+/** End-to-end CLI selftest: one valid FAST run plus six fail-closed attack cases. */
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import Ajv from 'ajv';
+import addFormats from 'ajv-formats';
+import { parseCandidateEvidence, sealCandidateEvidence } from '../reporters/playwright-evidence-reporter.ts';
+import { validateProbeTarget } from './collect-oracle-evidence.ts';
+import { readJSON, sha256, sha256File, stableStringify, type EvidenceEvent } from './lib.ts';
 
-const ROOT = process.cwd();
-const PACKET = 'examples/store-STO-186/bug-packet.yaml';
+const root = process.cwd();
+const packet = 'examples/store-STO-190-fast/bug-packet.yaml';
+const testFile = 'examples/store-STO-190-fast/STO-190.spec.ts';
+const mutationFile = '.qc-selftest-business-mutation.ts';
+const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+const packetHash = sha256File(packet);
+const env: NodeJS.ProcessEnv = {
+  ...process.env,
+  QC_RUN_ID: 'selftest-run', GITHUB_REPOSITORY: 'owner/repo',
+  QC_BASE_SHA: head, QC_HEAD_SHA: head, QC_SHA: head,
+  QC_PACKET_SHA256: packetHash, QC_ENVIRONMENT_ID: 'store-staging',
+};
+let failures = 0;
 
-function reset(): void {
-  rmSync('artifacts', { recursive: true, force: true });
-  mkdirSync('artifacts/evidence-raw', { recursive: true });
-  mkdirSync('artifacts/run-2', { recursive: true });
+function check(name: string, condition: boolean): void {
+  console.log(`${condition ? '✓' : '✗'} ${name}`);
+  if (!condition) failures += 1;
+}
+
+function run(script: string, args: string[] = []): { status: number; output: string } {
+  const result = spawnSync(process.execPath, ['--import', 'tsx', script, ...args], {
+    cwd: root, env, encoding: 'utf8',
+  });
+  return { status: result.status ?? 1, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
 }
 
 function passingReport(): unknown {
-  return {
-    suites: [
-      { specs: [{ tests: [{ results: [{ status: 'passed' }] }] }] },
-    ],
-  };
+  return { suites: [{ specs: [{ title: 'STO-190', tests: [{ status: 'expected', results: [{ status: 'passed' }] }] }] }] };
 }
 
-function writeReports(): void {
+function writeRuntimeArtifacts(event: EvidenceEvent): void {
+  mkdirSync('artifacts/evidence-raw', { recursive: true });
   writeFileSync('artifacts/report.json', JSON.stringify(passingReport()));
-  writeFileSync('artifacts/run-2/report.json', JSON.stringify(passingReport()));
-  writeFileSync(
-    'artifacts/reporter-summary.json',
-    JSON.stringify({ generated_by: 'playwright-evidence-reporter.ts', tests: [] }),
-  );
-  // 静态闸门产物:全部 ok
-  writeFileSync('artifacts/business-code-change.json', JSON.stringify({ ok: true }));
-  writeFileSync('artifacts/weak-assertions.json', JSON.stringify({ ok: true, violations: [] }));
-  writeFileSync(
-    'artifacts/counterfactual.json',
-    JSON.stringify({ level: 'CF-2', old_test_failed_as_expected: true, reason_code: 'cross_system' }),
-  );
+  writeFileSync('artifacts/reporter-summary.json', JSON.stringify({
+    generated_by: 'playwright-evidence-reporter.ts',
+    tests: [{ test_id: 'STO-190', status: 'passed', errors: [], test_sha256: sha256File(testFile) }],
+    errors: [],
+  }));
+  writeFileSync('artifacts/evidence-raw/fast.json', JSON.stringify(event));
+  writeFileSync('artifacts/execution-state.json', JSON.stringify({
+    state: 'EXECUTING', state_entered_at: new Date().toISOString(), retry_count: 0,
+    cost_usd: 0, api_calls: 1, parallel_runs: 1, cleanup_debt: 0,
+  }));
 }
 
-function writeEvidence(status: string): void {
-  const ev = (field: string, val: unknown) => ({
-    evidence_type: field === 'duplicate_task_count' ? 'duplicate_count' : 'backend_query',
-    system: 'nupai-store',
-    record_id: 'e2e_STO_186_selftest',
-    asserted_field: field,
-    expected_from_packet: val,
-    raw_response: { [field]: val },
-  });
-  writeFileSync('artifacts/evidence-raw/a.json', JSON.stringify(ev('status', status)));
-  writeFileSync('artifacts/evidence-raw/b.json', JSON.stringify(ev('duplicate_task_count', 0)));
+function seal(label: string): EvidenceEvent {
+  return sealCandidateEvidence({
+    assertion_id: 'order-detail-label', evidence_type: 'reload_state',
+    system: 'nupai-store', record_id: 'order-detail-button', correlation_id: 'corr-selftest',
+    raw_response: { label },
+  }, testFile, env);
 }
 
-function runClassify(): void {
-  try {
-    execSync(`node --import tsx scripts/classify-risk.ts --packet ${PACKET}`, {
-      cwd: ROOT,
-      stdio: 'pipe',
-    });
-  } catch {
-    // classify 对缺 base/head 不报错;risk.json 已生成
-  }
+rmSync('artifacts', { recursive: true, force: true });
+try {
+  mkdirSync('artifacts', { recursive: true });
+  check('runtime snapshot 可创建', run('scripts/detect-business-code-change.ts', [
+    '--mode', 'runtime-snapshot', '--output', 'artifacts/worktree-before.json',
+  ]).status === 0);
+  writeFileSync(mutationFile, 'export const forbidden = true;');
+  check('运行期业务代码 mutation 被拒绝', run('scripts/detect-business-code-change.ts', [
+    '--mode', 'runtime-verify', '--snapshot', 'artifacts/worktree-before.json',
+  ]).status !== 0);
+  unlinkSync(mutationFile);
+  check('清除 mutation 后 runtime gate 通过', run('scripts/detect-business-code-change.ts', [
+    '--mode', 'runtime-verify', '--snapshot', 'artifacts/worktree-before.json',
+  ]).status === 0);
+
+  const goodEvent = seal('查看详情');
+  writeRuntimeArtifacts(goodEvent);
+  check('Packet schema/hash gate 通过', run('scripts/validate-packet.ts', ['--packet', packet]).status === 0);
+  check('FAST 风险分类保持 FAST', run('scripts/classify-risk.ts', ['--packet', packet]).status === 0 && readJSON<any>('artifacts/risk.json').final_risk === 'FAST');
+  check('弱断言扫描通过', run('scripts/detect-weak-assertions.ts', [testFile]).status === 0);
+  check('执行预算/TTL gate 通过', run('scripts/execution-gate.ts').status === 0);
+  check('证据完整性 gate 通过', run('scripts/evidence-gate.ts', ['--packet', packet]).status === 0);
+  const validVerdict = run('scripts/verdict-gate.ts', ['--packet', packet]);
+  check('真实完整链路产生 PASS', validVerdict.status === 0 && readJSON<any>('artifacts/verdict.json').merge_allowed === true);
+  const ajv = new Ajv({ allErrors: true, strict: false });
+  addFormats(ajv);
+  check('verdict 符合 schema', ajv.compile(readJSON<object>('schemas/verdict.schema.json'))(readJSON('artifacts/verdict.json')));
+
+  const wrongOracle = seal('查看');
+  writeFileSync('artifacts/evidence-raw/fast.json', JSON.stringify(wrongOracle));
+  check('完整但错误的物证仍能通过 integrity gate', run('scripts/evidence-gate.ts', ['--packet', packet]).status === 0);
+  check('错误业务值由唯一裁判拒绝', run('scripts/verdict-gate.ts', ['--packet', packet]).status !== 0);
+
+  const wrongProvenance = structuredClone(goodEvent);
+  wrongProvenance.provenance.head_sha = 'f'.repeat(40);
+  const { event_id: oldId, ...withoutId } = wrongProvenance;
+  void oldId;
+  wrongProvenance.event_id = sha256(stableStringify(withoutId));
+  writeFileSync('artifacts/evidence-raw/fast.json', JSON.stringify(wrongProvenance));
+  check('错误 provenance 即使重算 event_id 仍被拒绝', run('scripts/evidence-gate.ts', ['--packet', packet]).status !== 0);
+
+  writeFileSync('artifacts/evidence-raw/fast.json', JSON.stringify(goodEvent));
+  run('scripts/evidence-gate.ts', ['--packet', packet]);
+  writeFileSync('artifacts/report.json', JSON.stringify({ suites: [] }));
+  check('0 tests 不得 PASS', run('scripts/verdict-gate.ts', ['--packet', packet]).status !== 0);
+
+  check('测试 attachment 伪造 verdict 字段被拒绝', (() => {
+    try {
+      parseCandidateEvidence(Buffer.from(JSON.stringify({
+        assertion_id: 'order-detail-label', evidence_type: 'reload_state', system: 'nupai-store',
+        record_id: 'x', correlation_id: 'x', raw_response: {}, verdict: 'PASS',
+      })));
+      return false;
+    } catch { return true; }
+  })());
+  check('production URL 即使在 allowlist 仍被拒绝', (() => {
+    try { validateProbeTarget('https://store-production.example', ['store-production.example']); return false; }
+    catch { return true; }
+  })());
+} finally {
+  rmSync(join(root, 'artifacts'), { recursive: true, force: true });
+  try { unlinkSync(join(root, mutationFile)); } catch { /* already removed */ }
 }
 
-function runVerdict(): { code: number; out: string } {
-  try {
-    const out = execSync(`node --import tsx scripts/verdict-gate.ts --packet ${PACKET}`, {
-      cwd: ROOT,
-      stdio: 'pipe',
-    }).toString();
-    return { code: 0, out };
-  } catch (e: any) {
-    return { code: e.status ?? 1, out: (e.stdout?.toString() ?? '') + (e.stderr?.toString() ?? '') };
-  }
-}
-
-function readVerdict(): any {
-  return JSON.parse(readFileSync('artifacts/verdict.json', 'utf8'));
-}
-
-function runEvidenceGate(profile: string): number {
-  try {
-    execSync(`node --import tsx scripts/evidence-gate.ts --profile ${profile}`, {
-      cwd: ROOT,
-      stdio: 'pipe',
-    });
-    return 0;
-  } catch (e: any) {
-    return e.status ?? 1;
-  }
-}
-
-let failures = 0;
-function check(name: string, cond: boolean): void {
-  if (cond) {
-    console.log(`  ✓ ${name}`);
-  } else {
-    console.error(`  ✗ ${name}`);
-    failures++;
-  }
-}
-
-console.log('=== FESUN QC 自测 v1.1 ===');
-
-// 场景 A:正确证据 → PASS
-reset();
-runClassify();
-writeReports();
-writeEvidence('completed');
-{
-  const { code } = runVerdict();
-  const v = readVerdict();
-  console.log('场景 A(正确后端字段):');
-  check('verdict = PASS', v.verdict === 'PASS');
-  check('merge_allowed = true', v.merge_allowed === true);
-  check('退出码 0', code === 0);
-  check('profile 升级为 CROSS_SYSTEM(双系统契约)', v.profile === 'CROSS_SYSTEM');
-}
-
-// 场景 B:错误证据 → FAIL
-reset();
-runClassify();
-writeReports();
-writeEvidence('pending');
-{
-  const { code } = runVerdict();
-  const v = readVerdict();
-  console.log('场景 B(后端字段错误 pending):');
-  check('verdict = FAIL', v.verdict === 'FAIL');
-  check('merge_allowed = false', v.merge_allowed === false);
-  check('分类 = PRODUCT_BUG', v.failure_classification === 'PRODUCT_BUG');
-  check('退出码非 0', code !== 0);
-  check('reasons 提到 status 不匹配', JSON.stringify(v.reasons).includes('status'));
-}
-
-// 场景 C:伪造判定字段 → evidence-gate 拒绝
-reset();
-runClassify();
-writeReports();
-writeEvidence('completed');
-writeFileSync(
-  'artifacts/evidence-raw/forged.json',
-  JSON.stringify({
-    evidence_type: 'backend_query',
-    record_id: 'x',
-    raw_response: { status: 'completed' },
-    backend_verified: true, // 伪造判定字段
-  }),
-);
-{
-  const code = runEvidenceGate('CROSS_SYSTEM');
-  console.log('场景 C(证据含伪造 backend_verified):');
-  check('evidence-gate 退出码非 0(拒绝)', code !== 0);
-  const eg = JSON.parse(readFileSync('artifacts/evidence-gate.json', 'utf8'));
-  check('原因提到 backend_verified', JSON.stringify(eg.reasons).includes('backend_verified'));
-}
-
-console.log('');
-if (failures === 0) {
-  console.log('✅ 自测全部通过:机器闸门"物证反推"生效。');
-  if (existsSync('artifacts')) rmSync('artifacts', { recursive: true, force: true });
-  process.exit(0);
-} else {
-  console.error(`❌ 自测失败 ${failures} 项。`);
+if (failures) {
+  console.error(`自测失败 ${failures} 项`);
   process.exit(1);
 }
+console.log('FESUN QC CLI 自测与攻击测试全部通过。');

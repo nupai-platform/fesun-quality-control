@@ -1,0 +1,57 @@
+name: reusable-nightly-spines
+on:
+  workflow_call:
+    inputs:
+      project: { required: true, type: string }
+      head_sha: { required: true, type: string }
+      test_glob: { required: true, type: string }
+    secrets:
+      E2E_BASE_URL: { required: true }
+      E2E_USERNAME: { required: true }
+      E2E_PASSWORD: { required: true }
+permissions:
+  contents: read
+  issues: write
+jobs:
+  nightly-spines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: fesun-staging-acceptance
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with: { ref: "${{ inputs.head_sha }}" }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: "22", cache: npm }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - id: regression
+        name: Run all registered critical spines without impact-map filtering
+        env:
+          QC_TEST_GLOB: ${{ inputs.test_glob }}
+          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+        run: |
+          mkdir -p artifacts/nightly
+          npx playwright test "$QC_TEST_GLOB" --project=chromium --reporter=json > artifacts/nightly/report.json
+      - name: Open or update release-blocking Nightly issue
+        if: ${{ failure() && steps.regression.outcome == 'failure' }}
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          QC_PROJECT: ${{ inputs.project }}
+          QC_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const title = `[Nightly][release-blocking] ${process.env.QC_PROJECT} spine regression failed`;
+            const body = `Classification: REGRESSION_PRODUCT_BUG or ENVIRONMENT_PENDING_TRIAGE\nRun: ${process.env.QC_RUN_URL}\nRelease remains blocked until triaged.`;
+            const existing = await github.rest.issues.listForRepo({ ...context.repo, state: 'open', labels: 'nightly,release-blocking', per_page: 100 });
+            const issue = existing.data.find(item => item.title === title);
+            if (issue) await github.rest.issues.createComment({ ...context.repo, issue_number: issue.number, body });
+            else await github.rest.issues.create({ ...context.repo, title, body, labels: ['nightly', 'release-blocking'] });
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-spines-${{ inputs.project }}-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 14
+          if-no-files-found: error

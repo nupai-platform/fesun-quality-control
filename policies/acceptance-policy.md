@@ -1,11 +1,11 @@
-# FESUN 验收政策 v1.1(治理宪法)
+# FESUN 验收政策 v1.1.1（治理宪法）
 
 > 本文件是长期规则,不随每个 Bug 发送给 AI。测试 Agent 每次只接收短指令 + Bug Packet + 本政策链接。
 
 ## 四条不可动摇原则
 
-1. **事实不能由 AI 自填。** Bug 原始描述、预期业务结果、Oracle 必须有人类或系统来源。缺 `original_description` 或(非 FAST 时)`expected_business_result` → `BLOCKED`。
-2. **证据不能由 AI 自报。** Verdict Gate 只信:Playwright JSON reporter、exit code、后端原始响应体、network trace、git diff。AI 写的布尔字段不作为任何 Gate 输入。
+1. **事实不能由 AI 自填。** Bug 原始描述、预期业务结果、Oracle 必须有人类或系统来源并带内容哈希。任何等级缺 `original_description`、来源哈希或 `expected_business_result` → `BLOCKED`。
+2. **证据不能由 AI 自报。** Verdict Gate 只信 Playwright 官方结果、受保护 Reporter 封装的 supporting evidence、trusted read-only probe、exit code、network trace 和 git/runtime mutation 证据。AI 写的布尔字段不作为任何 Gate 输入。
 3. **影响范围不能由 AI 单独决定。** `spine-map + code-impact-map + AI 补充` 取并集,AI 只能加不能减。
 4. **Definition of Done = 证据契约。** 需求来源 + 代码 + 曾能失败的测试 + Oracle + 上下游通过 + 机器 Gate 放行,才从 `Implemented → Verified → Done`。
 
@@ -13,16 +13,16 @@
 
 | 结论 | 条件 |
 |---|---|
-| PASS | 原 Bug 场景自动覆盖 + 后端字段匹配 + 刷新/重进正确 + 两独立证据一致 + 所需回归通过 + STANDARD+ 连续两次通过 + CRITICAL+ 反事实成立 + 无未解释异常 |
+| PASS | 原 Bug 场景自动覆盖 + 每条 Oracle 满足规定的独立 collector + 刷新/重进正确 + 所需回归通过 + STANDARD+ 连续两次通过 + CRITICAL+ 反事实成立 + 所有 provenance/hash 匹配 + 无未解释异常 |
 | FAIL | 产品仍错 / 链条回归失败 / 跨系统不一致 / 重复数据 / 状态回退 / 改了业务代码 / 弱断言 / 孤儿集成 |
 | BLOCKED | 环境、账号、权限、依赖服务导致核心验证无法开始;或缺事实源 |
 | PARTIAL | 完成部分真实验证,但缺后端 / 跨系统 / 反事实 / 关键回归 |
 
-## 禁止修改范围(测试 Worker)
+## 测试 Worker 权限边界
 
-只允许改:`testing/**`、`playwright/**`、`playwright.config.*`、`docs/testing/**`。
-禁止改:`src/** app/** backend/** migrations/** services/** models/** events/** schema.prisma`。
-命中禁止路径 → `TEST_WORKER_MODIFIED_BUSINESS_CODE` → FAIL。
+测试 authoring 任务只允许改 `testing/**`、`playwright/**`、`playwright.config.*`、`docs/testing/**`。
+正常 Bug 修复 PR 可以按其任务范围修改业务代码，不能用 authoring 白名单误杀。
+无论哪种 PR，测试执行前后工作树出现未授权业务代码 mutation → `TEST_WORKER_MODIFIED_BUSINESS_CODE` → FAIL。
 
 ## 弱断言禁令(核心业务断言)
 
@@ -41,7 +41,7 @@ diff 触及 `migrations/` 或 `schema.prisma` → 禁止 CF-1,走 CF-2。
 
 ## 数据隔离
 
-测试数据带唯一戳 `e2e_<BUG>_<runid>_<uuid>`,不依赖 cleanup;Run2 用全新 UUID;清理失败记 `cleanup_debt` 不阻塞;凌晨 cron 物理删除 72h 前的 `e2e_*`。生产库测试账号仅 `GRANT SELECT`。
+测试数据带唯一戳 `e2e_<BUG>_<runid>_<uuid>`，不依赖 cleanup；Run2 用全新 UUID。清理失败记 `cleanup_debt`，达到硬上限后环境 BLOCKED。清理必须使用专用 `test_run_id`/`is_test_data` 字段，不允许用 SQL `_` 通配模式误删。生产库数据库凭据只读，API 侧另有生产 host denylist 和 Staging 指纹硬门。
 
 ## 唯一门禁
 

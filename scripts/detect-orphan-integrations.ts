@@ -1,85 +1,79 @@
-/**
- * detect-orphan-integrations.ts v1.1
- *
- * 扫描业务代码中的跨系统集成点(API client 调用 / event publish / consumer handler),
- * 与 spine/code-impact-map.yaml 登记项比对。未登记 → UNMAPPED_INTEGRATION → 阻止合并。
- *
- * 用法: tsx scripts/detect-orphan-integrations.ts --root <业务仓库根> [--map spine/code-impact-map.yaml]
- *
- * 注:这是启发式静态扫描(正则),用于 CI 兜底提醒。它宁可误报也不漏报;
- *     误报可在 code-impact-map.yaml 显式登记消除。
- */
-import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+/** Detect integration calls that have neither a registered contract nor a registered source path. */
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { globSync } from 'glob';
-import { readYAML, fileExists } from './lib.ts';
+import { fileExists, readYAML } from './lib.ts';
 
-function arg(flag: string): string | undefined {
-  const a = process.argv.slice(2);
-  const i = a.indexOf(flag);
-  return i >= 0 ? a[i + 1] : undefined;
+const INTEGRATION_PATTERNS: { re: RegExp; kind: string }[] = [
+  { re: /\b(?:publish|emit)Event\s*\(\s*['"`]([\w.-]+)['"`]/g, kind: 'event_publish' },
+  { re: /@(?:EventPattern|MessagePattern)\s*\(\s*['"`]([\w.-]+)['"`]/g, kind: 'consumer' },
+  { re: /\b(?:crm|store|mos|platform)Client\.\w+\s*\(/gi, kind: 'api_client' },
+  { re: /fetch\s*\(\s*[`'"]https?:\/\/[^`'"]*\/(?:api|events|sync)\//g, kind: 'cross_call' },
+];
+
+interface FoundIntegration { file: string; kind: string; token: string; registered: boolean }
+
+export function scanOrphanIntegrations(root: string, mapPath: string): FoundIntegration[] {
+  const registeredContracts = new Set<string>();
+  const registeredPaths = new Set<string>();
+  if (fileExists(mapPath)) {
+    const map = readYAML<any>(mapPath);
+    const impact = map?.code_impact_map ?? {};
+    for (const [path, entry] of Object.entries<any>(impact)) {
+      registeredPaths.add(path);
+      for (const contract of entry?.contracts ?? []) registeredContracts.add(contract);
+    }
+  }
+  const prefix = root === '.' ? '' : `${root.replace(/\/$/, '')}/`;
+  const files = globSync(`${root}/**/*.{ts,tsx,js,jsx,py}`, {
+    nodir: true,
+    ignore: [
+      '**/node_modules/**', '**/dist/**', '**/.qc/**', '**/testing/**', '**/tests/**',
+      '**/examples/**', '**/*.spec.*', '**/*.test.*',
+    ],
+  });
+  const found: FoundIntegration[] = [];
+  for (const file of files) {
+    const relative = prefix && file.startsWith(prefix) ? file.slice(prefix.length) : file.replace(/^\.\//, '');
+    const content = readFileSync(file, 'utf8');
+    for (const pattern of INTEGRATION_PATTERNS) {
+      pattern.re.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.re.exec(content)) !== null) {
+        const token = match[1] ?? match[0].replace(/\s+/g, ' ').slice(0, 80);
+        found.push({
+          file: relative,
+          kind: pattern.kind,
+          token,
+          registered: pattern.kind === 'event_publish' || pattern.kind === 'consumer'
+            ? registeredContracts.has(token)
+            : registeredPaths.has(relative),
+        });
+      }
+    }
+  }
+  return found;
 }
 
-// 集成点特征
-const INTEGRATION_PATTERNS: { re: RegExp; kind: string }[] = [
-  { re: /\b(publish|emit)Event\s*\(\s*['"`]([\w.\-]+)['"`]/g, kind: 'event_publish' },
-  { re: /@(EventPattern|MessagePattern)\s*\(\s*['"`]([\w.\-]+)['"`]/g, kind: 'consumer' },
-  { re: /(crm|store|mos|platform)Client\.\w+\s*\(/g, kind: 'api_client' },
-  { re: /fetch\s*\(\s*[`'"]https?:\/\/[^`'"]*\/(api|events|sync)\//g, kind: 'cross_call' },
-];
+function arg(flag: string): string | undefined {
+  const args = process.argv.slice(2);
+  const index = args.indexOf(flag);
+  return index >= 0 ? args[index + 1] : undefined;
+}
 
 function main(): void {
   const root = arg('--root') ?? '.';
   const mapPath = arg('--map') ?? 'spine/code-impact-map.yaml';
-
-  const registered = new Set<string>();
-  if (fileExists(mapPath)) {
-    const map = readYAML<any>(mapPath);
-    const impact = map?.code_impact_map ?? map ?? {};
-    for (const entry of Object.values<any>(impact)) {
-      (entry?.contracts ?? []).forEach((c: string) => registered.add(c));
-    }
-  }
-
-  const files = globSync(`${root}/**/*.{ts,js,py}`, {
-    nodir: true,
-    ignore: ['**/node_modules/**', '**/dist/**', '**/testing/**', '**/*.spec.*', '**/*.test.*'],
-  });
-
-  const found: { file: string; kind: string; token: string; registered: boolean }[] = [];
-  for (const file of files) {
-    const content = readFileSync(file, 'utf8');
-    for (const { re, kind } of INTEGRATION_PATTERNS) {
-      re.lastIndex = 0;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(content)) !== null) {
-        const token = m[2] ?? m[1] ?? m[0].slice(0, 40);
-        found.push({ file, kind, token, registered: registered.has(token) });
-      }
-    }
-  }
-
-  const orphans = found.filter((f) => f.kind !== 'api_client' && f.kind !== 'cross_call' && !f.registered);
-
-  const result = {
-    computed_by: 'detect-orphan-integrations.ts',
-    generated_at: new Date().toISOString(),
-    root,
-    map: mapPath,
-    scanned_files: files.length,
-    found_integration_points: found.length,
-    orphans,
-    ok: orphans.length === 0,
+  const found = scanOrphanIntegrations(root, mapPath);
+  const orphans = found.filter((integration) => !integration.registered);
+  const output = {
+    computed_by: 'detect-orphan-integrations.ts', generated_at: new Date().toISOString(),
+    root, map: mapPath, found_integration_points: found.length, orphans, ok: orphans.length === 0,
   };
-
   mkdirSync('artifacts', { recursive: true });
-  writeFileSync('artifacts/orphan-integrations.json', JSON.stringify(result, null, 2));
-
-  if (orphans.length > 0) {
-    console.error(`发现 ${orphans.length} 个未登记跨系统集成点(需在 code-impact-map.yaml 登记):`);
-    orphans.forEach((o) => console.error(`  ${o.file}  [${o.kind}]  ${o.token}`));
-    process.exit(1);
-  }
-  console.log(`孤儿集成检查通过:${found.length} 个集成点均已登记。`);
+  writeFileSync('artifacts/orphan-integrations.json', JSON.stringify(output, null, 2));
+  console.log(JSON.stringify(output, null, 2));
+  process.exit(output.ok ? 0 : 1);
 }
 
-main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

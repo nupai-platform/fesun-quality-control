@@ -1,0 +1,52 @@
+schema_version: 1.1
+bug:
+  id: STO-191
+  title: 量体完成状态未同步 Platform
+  original_description: "Store 量体完成后，Platform 进度仍停留在 measurement_pending，且缺少 order_id 的旧事件不应被消费。"
+  source:
+    type: user_report
+    uri: "user-report://store/STO-191"
+    reporter: 振英
+    content_sha256: 9998c5df11cc24027339312cea37a4698c51f08244b15d45983227fa36efe120
+expected_business_result:
+  owner: 振英
+  confirmed_at: "2026-07-18T00:00:00+08:00"
+  source_uri: "approval://spine/SPINE-02/SEG-02D"
+  assertions_sha256: a99b18f0d807437735ebb97f193ee4afd534f359730fcd94f51920e6584a7be7
+  assertions:
+    - id: platform-progress-status
+      selector: /progress_status
+      operator: equals
+      expected: measurement_completed
+      required_collectors: [playwright_attachment, trusted_http_probe]
+      min_independent_sources: 2
+      probe: { method: GET, path_template: "/api/progress/by-store-task/{record_id}" }
+environment:
+  target_system: fesun-platform
+  base_url_env: PLATFORM_E2E_BASE_URL
+  expected_environment_id: platform-staging
+  environment_id_header: x-fesun-environment
+  allowed_hosts_env: PLATFORM_E2E_ALLOWED_HOSTS
+  account: { token_env: PLATFORM_E2E_READ_TOKEN, role: e2e_readonly }
+git: { repo: houzhenying226-jpg/nupai-store }
+risk_claim: { declared_level: CROSS_SYSTEM }
+business_scope:
+  affected_contracts: [store.task.completed, platform.progress.updated]
+  affected_spines: [SPINE-02]
+  affected_segments: [SEG-02D]
+counterfactual:
+  level: CF-2
+  reason_code: cross_system_contract_replay
+  expected_failure_signature: HTTP_422_MISSING_ORDER_ID
+  replay:
+    method: POST
+    path: /api/events/measurement-completed/validate
+    broken_payload: { taskStatus: done }
+    expected_status: 422
+    response_selector: /code
+    expected_response: MISSING_ORDER_ID
+    test_title_pattern: "STO-191 CF-2"
+test_data:
+  namespace: e2e_STO_191
+  expires_after_hours: 72
+  cleanup_debt_limit: 10

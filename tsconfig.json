@@ -16,6 +16,6 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["scripts/**/*.ts", "reporters/**/*.ts"],
+  "include": ["scripts/**/*.ts", "reporters/**/*.ts", "tests/**/*.ts", "eslint.config.js"],
   "exclude": ["node_modules", "dist"]
 }

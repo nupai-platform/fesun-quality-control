@@ -1,56 +1,44 @@
-# fesun-quality-control
+# FESUN Quality Control v1.1.1
 
-FESUN 四系统(CRM / Store / MOS / Platform)可信开发验收内核 **v1.1**。
-中央治理仓库,不是第五个业务系统。核心原则:
+CRM / Store / MOS / Platform 的可信开发验收内核。它不是第五个业务系统；候选测试负责操作，受保护机器代码负责取证、复判和阻止虚假通过。
 
-> **AI 负责理解、规划、编写、分析;机器负责隔离、执行、取证、判定、阻止虚假通过。**
-> **凡是能由代码验证的规则,都不要求 AI 记住;凡是决定 PASS 的条件,都不让执行测试的 AI 自己裁决。**
+## 可信链路
+
+```text
+Bug Packet（来源与 Oracle hash）
+  → 风险 max(声明, diff, 关键词, 系统范围)
+  → candidate Playwright（官方 report + supporting attachment）
+  → trusted read-only GET Oracle / CF-2 replay
+  → Packet / Evidence / Execution / Mutation / Weak Assertion Gates
+  → verdict-gate.ts（唯一裁判）
+  → acceptance-gate / final-verdict（唯一 Required Check）
+```
+
+PASS 必须同时满足来源、Schema、完整 SHA provenance、严格类型 Oracle、证据源数量、测试结果、Run2 新数据、反事实和脊柱要求。`PARTIAL/BLOCKED/FAIL` 的 `merge_allowed` 恒为 false。
+
+## 本地验证
+
+```bash
+npm ci
+npm run verify
+```
+
+`verify` 执行 ESLint、严格 TypeScript、脊柱/Workflow 校验、覆盖率门槛、完整 CLI 攻击自测和 high 级供应链审计。攻击自测覆盖：伪造 verdict、错误 provenance、错误 Oracle、0 tests、production URL、运行期业务代码 mutation。
 
 ## 目录
 
-```
-policies/     验收宪法(长期规则,不随每个 Bug 发送)
-schemas/      bug-packet / evidence-event / verdict 三个 JSON Schema
-spine/        脊柱地图 + 代码影响映射 + owner
-scripts/      风险分级 / 弱断言 / 业务代码修改 / 孤儿集成 / 证据闸门 / 唯一裁判 / 自测
-reporters/    Playwright evidence reporter(机器落原始证据)
-templates/    业务仓库调用模板
-examples/     Store STO-186 Bug Packet + 定点测试模板
-.github/      reusable-pr-gate.yml(锁 @v1.1.0)
-```
+- `policies/`：冻结验收、证据、反事实、执行策略。
+- `schemas/`：Packet、Evidence、Verdict、Counterfactual、Execution、Spine/Impact Schema。
+- `scripts/`：风险、取证、反事实、门禁、地图和自测。
+- `reporters/`：将候选 attachment 封装为 provenance-bound Evidence Event。
+- `spine/`：脊柱、代码影响、Owner。
+- `examples/`：Store FAST / STANDARD / CROSS_SYSTEM 三样板。
+- `.github/workflows/`：PR/main/Nightly/on-demand/Release 五层 CI。
+- `templates/`：四系统 Caller 与分层回归模板。
+- `docs/`：执行 Spec、零遗漏台账、外部设置真账和运维说明。
 
-## 快速开始
+## 接入边界
 
-```bash
-npm install
-npm run typecheck      # 类型检查
-npm run selftest       # 自测:证明"物证反推"生效(PASS/FAIL/伪造拒绝三场景)
-```
+业务仓库从 `templates/adapters/` 复制对应 Caller，只能用经过审查的完整 40 位 QC commit；禁止 `@main`、tag、动态 `qc_ref` 和 `secrets: inherit`。真实 Environment、只读账号与 Ruleset 按 `docs/GITHUB_SETUP.md` 配置并保留真账。
 
-## 证据不可伪造数据流
-
-```
-Playwright → report.json + evidence-raw/*.json + reporter-summary.json  (机器)
-   → evidence-gate.ts  (格式 + 禁判定字段黑名单)
-   → verdict-gate.ts   (对照 bug-packet 独立复判 → verdict.json)
-   → GitHub Required Check 只读 verdict.json.merge_allowed
-```
-
-AI 无权写入 `verdict.json / report.json / evidence-raw`。
-
-## 风险分级
-
-`final_risk = max(声明, diff 路径推断, 关键词推断)`,AI 只能升不能降。
-FAST(2–5min)/ STANDARD / CRITICAL / CROSS_SYSTEM / MANUAL_REVIEW。
-
-## 业务仓库接入(4 步)
-
-1. 复制 `templates/caller-acceptance-gate.yml` → 本仓库 `.github/workflows/acceptance-gate.yml`,改 `project`。
-2. 在 `testing/acceptance/bugs/<BUG-ID>/` 放 `bug-packet.yaml` + `<BUG-ID>.spec.ts`(参考 examples)。
-3. `playwright.config.ts` 启用 evidence reporter,配 `retries/trace/screenshot`。
-4. 仓库 Settings → Rules 把 `acceptance-gate / final-verdict` 设为合并必需。
-
-## 冻结
-
-v1.1 即日冻结。仅允许:修脚本 bug、增系统适配器、增 spine/contract 映射。
-禁止 v1.2 方法论大重构。
+v1.1 已冻结；只接受脚本缺陷修复、系统适配器和 spine/contract 增量。当前按用户指令完全跳过双总控接入。

@@ -1,310 +1,274 @@
-/**
- * verdict-gate.ts v1.1  —— 唯一裁判(P0-1 核心)
- *
- * 从不可伪造产物独立复判,产出 artifacts/verdict.json。
- * AI 不得写入本文件的任何输出。GitHub Required Check 只读 verdict.json.merge_allowed。
- *
- * 输入产物(全部机器生成):
- *   artifacts/report.json                  Playwright 官方 JSON reporter
- *   artifacts/reporter-summary.json         evidence reporter 摘要(含 run 状态)
- *   artifacts/evidence-raw/*.json           后端原始响应体
- *   artifacts/weak-assertions.json          弱断言扫描结果
- *   artifacts/business-code-change.json     业务代码修改检查
- *   artifacts/risk.json                     风险分级
- *   artifacts/counterfactual.json (可选)    反事实结果
- *   artifacts/orphan-integrations.json (可选) 孤儿集成检查
- *   bug-packet.yaml (--packet)              期望值来源(唯一真相)
- *
- * 复判逻辑:任何一项不满足 → 非 PASS。AI 声明的布尔字段一律忽略。
- */
-import { writeFileSync, mkdirSync } from 'node:fs';
+/** The sole merge adjudicator. PASS is impossible when any required fact or gate is absent. */
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import Ajv from 'ajv';
+import addFormats from 'ajv-formats';
 import { globSync } from 'glob';
 import {
+  assertionMatches,
+  fileExists,
   readJSON,
   readYAML,
-  fileExists,
-  getByPath,
+  sha256File,
+  type BugPacket,
+  type EvidenceEvent,
   type RiskLevel,
 } from './lib.ts';
 
-function arg(flag: string): string | undefined {
-  const a = process.argv.slice(2);
-  const i = a.indexOf(flag);
-  return i >= 0 ? a[i + 1] : undefined;
+type Verdict = 'PASS' | 'FAIL' | 'BLOCKED' | 'PARTIAL';
+const COUNTERFACTUAL_SCHEMA = fileURLToPath(new URL('../schemas/counterfactual.schema.json', import.meta.url));
+
+export interface PlaywrightEvaluation {
+  total: number;
+  passed: number;
+  failures: string[];
+  flaky: boolean;
+  ok: boolean;
 }
 
-interface Checks {
-  all_tests_passed: boolean;
-  backend_assertions_matched: boolean;
-  no_business_code_change: boolean;
-  no_weak_assertions: boolean;
-  run_1_passed: boolean;
-  run_2_passed: boolean;
-  counterfactual_ok: boolean;
-  no_orphan_integrations: boolean;
+function arg(flag: string): string | undefined {
+  const args = process.argv.slice(2);
+  const index = args.indexOf(flag);
+  return index >= 0 ? args[index + 1] : undefined;
+}
+
+export function evaluatePlaywrightReport(report: unknown): PlaywrightEvaluation {
+  const tests: Array<{ title: string; status?: string; results?: Array<{ status?: string }> }> = [];
+  const walk = (suites: any[]): void => {
+    for (const suite of suites ?? []) {
+      for (const spec of suite.specs ?? []) for (const test of spec.tests ?? []) {
+        tests.push({ title: spec.title ?? '(untitled)', status: test.status, results: test.results });
+      }
+      walk(suite.suites ?? []);
+    }
+  };
+  walk((report as { suites?: any[] })?.suites ?? []);
+  const failures: string[] = [];
+  let passed = 0;
+  let flaky = false;
+  for (const test of tests) {
+    const results = test.results ?? [];
+    const last = results.at(-1)?.status;
+    const earlierFailure = results.slice(0, -1).some((result) => result.status !== 'passed');
+    const declaredFlaky = test.status === 'flaky';
+    if (earlierFailure || declaredFlaky) flaky = true;
+    if (last === 'passed' && !earlierFailure && !declaredFlaky && test.status !== 'skipped') passed += 1;
+    else failures.push(`${test.title}: ${test.status ?? last ?? 'unknown'}`);
+  }
+  return { total: tests.length, passed, failures, flaky, ok: tests.length > 0 && failures.length === 0 };
+}
+
+export function adjudicateAssertions(packet: BugPacket, events: EvidenceEvent[]): string[] {
+  const reasons: string[] = [];
+  for (const assertion of packet.expected_business_result.assertions) {
+    const matching = events.filter((event) => event.assertion_id === assertion.id);
+    const collectors = new Set(matching.map((event) => event.collector_kind));
+    for (const collector of assertion.required_collectors) {
+      const observations = matching.filter((event) => event.collector_kind === collector);
+      if (!observations.length) {
+        reasons.push(`${assertion.id}: 缺 ${collector} 证据`);
+      } else if (!observations.every((event) => assertionMatches(assertion, event.raw_response))) {
+        reasons.push(`${assertion.id}: ${collector} 原始响应与 Oracle 不匹配`);
+      }
+    }
+    if (collectors.size < assertion.min_independent_sources) {
+      reasons.push(`${assertion.id}: 独立证据源不足`);
+    }
+  }
+  return reasons;
+}
+
+function gate(
+  path: string,
+  reasons: string[],
+  blocked: string[],
+): Record<string, any> | undefined {
+  if (!fileExists(path)) { blocked.push(`缺必需门禁产物 ${path}`); return undefined; }
+  try {
+    const value = readJSON<Record<string, any>>(path);
+    if (value.ok !== true) reasons.push(`${path} 未通过: ${(value.reasons ?? []).join('; ')}`);
+    return value;
+  } catch (error) {
+    blocked.push(`${path} 无法解析: ${(error as Error).message}`);
+    return undefined;
+  }
 }
 
 function main(): void {
   const packetPath = arg('--packet');
-  if (!packetPath) {
-    console.error('缺少 --packet');
-    process.exit(2);
-  }
-  const packet = readYAML<any>(packetPath);
-  const bugId: string = packet?.bug?.id ?? 'UNKNOWN';
-
+  if (!packetPath) { console.error('缺 --packet'); process.exit(2); }
+  const packet = readYAML<BugPacket>(packetPath);
   const reasons: string[] = [];
-  const unverified: string[] = [];
+  const blocked: string[] = [];
+  const partialReasons: string[] = [];
+  const checks: Record<string, boolean> = {};
+  if (!process.env.QC_SHA || !/^[0-9a-f]{40}$/.test(process.env.QC_SHA)) {
+    blocked.push('缺完整 40 位可信 QC_SHA');
+  }
 
-  // 风险等级(来自 classify-risk 的机器输出)
-  let profile: RiskLevel = 'FAST';
-  if (fileExists('artifacts/risk.json')) {
-    const risk = readJSON<any>('artifacts/risk.json');
-    if (risk.verdict === 'BLOCKED') {
-      emit({
-        verdict: 'BLOCKED',
-        merge_allowed: false,
-        bug_id: bugId,
-        profile: 'MANUAL_REVIEW',
-        failure_classification: 'MISSING_FACT_SOURCE',
-        reasons: [risk.reason ?? '缺事实源'],
-      });
-      return;
+  const packetValidation = gate('artifacts/packet-validation.json', reasons, blocked);
+  const evidenceGate = gate('artifacts/evidence-gate.json', reasons, blocked);
+  const executionGate = gate('artifacts/execution-gate.json', reasons, blocked);
+  const mutationGate = gate('artifacts/business-code-change.json', reasons, blocked);
+  const weakGate = gate('artifacts/weak-assertions.json', reasons, blocked);
+  checks.packet_valid = packetValidation?.ok === true;
+  checks.evidence_integrity = evidenceGate?.ok === true;
+  checks.execution_policy = executionGate?.ok === true;
+  checks.no_runtime_business_mutation = mutationGate?.ok === true;
+  checks.no_weak_assertions = weakGate?.ok === true;
+  if (mutationGate && mutationGate.mode !== 'runtime-verify') {
+    reasons.push('business-code-change 必须来自 runtime-verify，而非 authoring diff');
+    checks.no_runtime_business_mutation = false;
+  }
+  if (packetValidation?.packet_sha256 !== sha256File(packetPath)) {
+    reasons.push('Packet 在 validation 后被修改');
+    checks.packet_valid = false;
+  }
+
+  let profile: RiskLevel | undefined;
+  let riskOutput: Record<string, any> = {};
+  if (!fileExists('artifacts/risk.json')) blocked.push('缺 artifacts/risk.json');
+  else {
+    riskOutput = readJSON<Record<string, any>>('artifacts/risk.json');
+    if (riskOutput.verdict === 'BLOCKED') blocked.push(riskOutput.reason ?? '风险事实源不足');
+    else profile = riskOutput.final_risk as RiskLevel;
+  }
+  if (!profile) profile = 'MANUAL_REVIEW';
+
+  let currentRun: PlaywrightEvaluation = { total: 0, passed: 0, failures: ['缺 report'], flaky: false, ok: false };
+  if (fileExists('artifacts/report.json')) currentRun = evaluatePlaywrightReport(readJSON('artifacts/report.json'));
+  else blocked.push('缺 artifacts/report.json');
+  if (!currentRun.ok) {
+    if (currentRun.failures.length) reasons.push(...currentRun.failures.map((failure) => `测试未通过: ${failure}`));
+    else reasons.push('Playwright report 测试数为 0');
+  }
+  if (currentRun.flaky) reasons.push('当前运行发生 retry 后通过，按 FLAKY 拒绝');
+  checks.all_tests_passed = currentRun.ok && !currentRun.flaky;
+
+  if (fileExists('artifacts/reporter-summary.json')) {
+    const summary = readJSON<{ tests?: Array<{ status?: string; errors?: string[] }> }>('artifacts/reporter-summary.json');
+    if (!summary.tests?.length || summary.tests.some((test) => test.status !== 'passed' || test.errors?.length)) {
+      reasons.push('Reporter 摘要存在非 passed、封装错误或 0 测试');
     }
-    profile = risk.final_risk ?? 'FAST';
-  } else {
-    unverified.push('risk.json 缺失,默认按 STANDARD 复判');
-    profile = 'STANDARD';
-  }
+  } else blocked.push('缺 artifacts/reporter-summary.json');
 
-  // 1. Playwright 官方结果:所有测试 passed
-  let allTestsPassed = false;
-  if (fileExists('artifacts/report.json')) {
-    const report = readJSON<any>('artifacts/report.json');
-    allTestsPassed = evaluatePlaywrightReport(report);
-    if (!allTestsPassed) reasons.push('存在未通过的测试(report.json)');
-  } else {
-    reasons.push('缺 artifacts/report.json,无法确认测试结果');
-  }
+  const evidenceFiles = globSync([
+    'artifacts/evidence-raw/*.json',
+    'artifacts/evidence-trusted/*.json',
+    'artifacts/evidence-contract/*.json',
+  ], { nodir: true }).sort();
+  const events = evidenceFiles.map((file) => readJSON<EvidenceEvent>(file));
+  const assertionReasons = adjudicateAssertions(packet, events);
+  reasons.push(...assertionReasons);
+  checks.oracle_assertions_matched = assertionReasons.length === 0;
 
-  // 2. 后端原始响应体独立复判 —— 对照 bug-packet 的 assertions
-  const backendMatched = adjudicateBackend(packet, reasons);
-
-  // 3. 业务代码零修改
-  let noBizChange = true;
-  if (fileExists('artifacts/business-code-change.json')) {
-    const bcc = readJSON<any>('artifacts/business-code-change.json');
-    noBizChange = bcc.ok === true;
-    if (!noBizChange) reasons.push('测试任务修改了业务代码');
-  } else {
-    unverified.push('business-code-change.json 缺失');
-  }
-
-  // 4. 弱断言
-  let noWeak = true;
-  if (fileExists('artifacts/weak-assertions.json')) {
-    const wa = readJSON<any>('artifacts/weak-assertions.json');
-    noWeak = wa.ok === true;
-    if (!noWeak) reasons.push(`弱断言违规 ${wa.violations?.length ?? '?'} 处`);
-  } else {
-    unverified.push('weak-assertions.json 缺失');
-  }
-
-  // 5. 连续两次运行(STANDARD 及以上)
-  let run1 = false;
-  let run2 = false;
-  if (profile === 'FAST') {
-    run1 = allTestsPassed;
-    run2 = true; // FAST 不要求两次
-  } else {
-    run1 = fileExists('artifacts/run-1/report.json')
-      ? evaluatePlaywrightReport(readJSON('artifacts/run-1/report.json'))
-      : allTestsPassed;
-    if (fileExists('artifacts/run-2/report.json')) {
-      run2 = evaluatePlaywrightReport(readJSON('artifacts/run-2/report.json'));
-    } else {
-      run2 = false;
-      reasons.push(`${profile} 要求连续两次独立运行,缺 run-2/report.json`);
-    }
-    if (run1 && !run2) reasons.push('第二次运行未通过或缺失 → 不得 PASS(可能 FLAKY)');
-  }
-
-  // 6. 反事实(CRITICAL / CROSS_SYSTEM)
-  let cfOk = true;
-  if (profile === 'CRITICAL' || profile === 'CROSS_SYSTEM') {
-    if (fileExists('artifacts/counterfactual.json')) {
-      const cf = readJSON<any>('artifacts/counterfactual.json');
-      // CF-1/CF-2: 旧逻辑必须 FAIL(即 old_test_failed_as_expected=true)
-      cfOk = cf.old_test_failed_as_expected === true;
-      if (!cfOk && cf.level === 'CF-3') {
-        // CF-3 最高 PARTIAL(除非 owner 签字)
-        unverified.push('反事实仅 CF-3(证据回放),最高 PARTIAL');
-      } else if (!cfOk) {
-        reasons.push('反事实未证明旧逻辑会失败(测试可能识别不了旧错误)');
+  if (profile !== 'FAST' && profile !== 'MANUAL_REVIEW') {
+    for (const run of ['run-1', 'run-2']) {
+      const path = `artifacts/${run}/report.json`;
+      if (!fileExists(path)) blocked.push(`缺 ${path}`);
+      else {
+        const evaluation = evaluatePlaywrightReport(readJSON(path));
+        if (!evaluation.ok || evaluation.flaky) reasons.push(`${run} 未稳定通过`);
+        checks[`${run.replace('-', '_')}_passed`] = evaluation.ok && !evaluation.flaky;
       }
-    } else {
-      cfOk = false;
-      unverified.push(`${profile} 要求反事实验证,缺 counterfactual.json`);
+    }
+    const run1Records = new Set(events.map((event) => event.record_id));
+    const run2EvidenceFiles = globSync('artifacts/run-2/evidence-raw/*.json', { nodir: true });
+    const run2Events = run2EvidenceFiles.map((file) => readJSON<EvidenceEvent>(file));
+    const run2Records = new Set(run2Events.map((event) => event.record_id));
+    checks.run_2_fresh_data = run2Records.size > 0 &&
+      [...run2Records].every((record) =>
+        record.startsWith(`${packet.test_data.namespace}_`) && !run1Records.has(record));
+    if (!checks.run_2_fresh_data) reasons.push('Run2 未证明使用全新 namespace/run UUID 测试数据');
+  } else {
+    checks.run_1_passed = checks.all_tests_passed;
+    checks.run_2_passed = profile === 'FAST';
+    checks.run_2_fresh_data = true;
+  }
+
+  const needsCounterfactual = profile === 'CRITICAL' || profile === 'CROSS_SYSTEM';
+  checks.counterfactual_ok = !needsCounterfactual;
+  if (needsCounterfactual) {
+    if (!fileExists('artifacts/counterfactual.json')) blocked.push('缺 artifacts/counterfactual.json');
+    else {
+      const cf = readJSON<Record<string, any>>('artifacts/counterfactual.json');
+      const ajv = new Ajv({ allErrors: true, strict: false });
+      addFormats(ajv);
+      const validateCounterfactual = ajv.compile(readJSON<object>(COUNTERFACTUAL_SCHEMA));
+      const summary = fileExists('artifacts/reporter-summary.json')
+        ? readJSON<{ tests?: Array<{ test_sha256?: string }> }>('artifacts/reporter-summary.json') : {};
+      const testHashes = new Set((summary.tests ?? []).map((test) => test.test_sha256));
+      const expectedSignature = packet.counterfactual?.expected_failure_signature;
+      const structurallyValid = validateCounterfactual(cf);
+      const evidenceValid = structurallyValid &&
+        cf.baseline_failed === true && cf.fixed_passed === true &&
+        typeof cf.test_sha256 === 'string' && testHashes.has(cf.test_sha256) &&
+        typeof expectedSignature === 'string' && cf.observed_failure_signature === expectedSignature;
+      const migrationTouched = (riskOutput.path_hits ?? []).some((hit: string) =>
+        hit.includes('migrations') || hit.includes('schema.prisma'));
+      const allowedLevel = profile === 'CROSS_SYSTEM'
+        ? cf.level === 'CF-2'
+        : cf.level === 'CF-1' || cf.level === 'CF-2';
+      checks.counterfactual_ok = evidenceValid && allowedLevel && !(migrationTouched && cf.level === 'CF-1');
+      if (evidenceValid && cf.level === 'CF-3') {
+        checks.counterfactual_ok = false;
+        partialReasons.push('反事实仅达到 CF-3，按冻结政策最高 PARTIAL');
+      } else if (!checks.counterfactual_ok) {
+        reasons.push(`反事实无效: ${structurallyValid ? 'test hash/失败签名/级别不匹配' : ajv.errorsText(validateCounterfactual.errors)}`);
+      }
     }
   }
 
-  // 7. 孤儿集成(有该产物时才判)
-  let noOrphan = true;
-  if (fileExists('artifacts/orphan-integrations.json')) {
-    const orphan = readJSON<any>('artifacts/orphan-integrations.json');
-    noOrphan = orphan.ok === true;
-    if (!noOrphan) reasons.push('存在未登记的跨系统集成点(UNMAPPED_INTEGRATION)');
+  checks.no_orphan_integrations = profile !== 'CROSS_SYSTEM';
+  if (profile === 'CROSS_SYSTEM') {
+    const orphan = gate('artifacts/orphan-integrations.json', reasons, blocked);
+    checks.no_orphan_integrations = orphan?.ok === true;
   }
 
-  const checks: Checks = {
-    all_tests_passed: allTestsPassed,
-    backend_assertions_matched: backendMatched,
-    no_business_code_change: noBizChange,
-    no_weak_assertions: noWeak,
-    run_1_passed: run1,
-    run_2_passed: run2,
-    counterfactual_ok: cfOk,
-    no_orphan_integrations: noOrphan,
-  };
-
-  // ---- 最终裁定 ----
-  let verdict: 'PASS' | 'FAIL' | 'BLOCKED' | 'PARTIAL';
+  let verdict: Verdict;
   let classification: string | undefined;
-
-  const hardFail =
-    !allTestsPassed ||
-    !backendMatched ||
-    !noBizChange ||
-    !noWeak ||
-    !noOrphan ||
-    (profile !== 'FAST' && !run2) ||
-    ((profile === 'CRITICAL' || profile === 'CROSS_SYSTEM') && !cfOk && !hasCF3(profile));
-
-  if (!noBizChange) {
+  if (blocked.length) {
+    verdict = 'BLOCKED';
+    classification = 'MISSING_FACT_SOURCE';
+  } else if (reasons.length) {
     verdict = 'FAIL';
-    classification = 'TEST_WORKER_MODIFIED_BUSINESS_CODE';
-  } else if (!noWeak) {
-    verdict = 'FAIL';
-    classification = 'WEAK_ASSERTION';
-  } else if (!noOrphan) {
-    verdict = 'FAIL';
-    classification = 'UNMAPPED_INTEGRATION';
-  } else if (!allTestsPassed || !backendMatched) {
-    verdict = 'FAIL';
-    classification = 'PRODUCT_BUG';
-  } else if (profile !== 'FAST' && run1 && !run2) {
-    verdict = 'FAIL';
-    classification = 'FLAKY';
-  } else if (unverified.length > 0 && !hardFail) {
+    classification = !checks.no_runtime_business_mutation
+      ? 'TEST_WORKER_MODIFIED_BUSINESS_CODE'
+      : !checks.no_weak_assertions
+        ? 'WEAK_ASSERTION'
+        : currentRun.flaky || reasons.some((reason) => reason.includes('run-2'))
+          ? 'FLAKY'
+          : !checks.evidence_integrity || !checks.oracle_assertions_matched
+            ? 'INSUFFICIENT_EVIDENCE'
+            : 'PRODUCT_BUG';
+  } else if (partialReasons.length) {
     verdict = 'PARTIAL';
     classification = 'INSUFFICIENT_EVIDENCE';
-  } else if (hardFail) {
-    verdict = 'FAIL';
-    classification = classification ?? 'PRODUCT_BUG';
   } else {
     verdict = 'PASS';
   }
-
-  emit({
-    verdict,
-    merge_allowed: verdict === 'PASS',
-    bug_id: bugId,
-    profile,
-    checks,
-    failure_classification: verdict === 'PASS' ? undefined : classification,
-    reasons,
-    unverified_core_items: unverified,
-    artifacts: {
-      report: 'artifacts/report.json',
-      risk: 'artifacts/risk.json',
-    },
-  });
-}
-
-function hasCF3(_profile: RiskLevel): boolean {
-  if (!fileExists('artifacts/counterfactual.json')) return false;
-  const cf = readJSON<any>('artifacts/counterfactual.json');
-  return cf.level === 'CF-3';
-}
-
-/** 递归判断 Playwright JSON reporter 全部 passed */
-function evaluatePlaywrightReport(report: any): boolean {
-  const statuses: string[] = [];
-  const walk = (suites: any[]): void => {
-    for (const s of suites ?? []) {
-      for (const spec of s.specs ?? []) {
-        for (const t of spec.tests ?? []) {
-          const last = t.results?.[t.results.length - 1];
-          statuses.push(last?.status ?? t.status ?? 'unknown');
-        }
-      }
-      if (s.suites) walk(s.suites);
-    }
-  };
-  walk(report.suites ?? []);
-  if (statuses.length === 0) return false;
-  return statuses.every((s) => s === 'passed' || s === 'expected');
-}
-
-/** 后端原始响应体独立复判:evidence-raw 中 asserted_field 的实际值 === packet 期望值 */
-function adjudicateBackend(packet: any, reasons: string[]): boolean {
-  const assertions: Record<string, unknown> | undefined =
-    packet?.expected_business_result?.assertions;
-
-  if (!assertions) {
-    // FAST 级允许无后端断言
-    return true;
-  }
-
-  const files = globSync('artifacts/evidence-raw/*.json', { nodir: true });
-  if (files.length === 0) {
-    reasons.push('有 expected_business_result 但无任何 evidence-raw 原始证据');
-    return false;
-  }
-
-  const matchedFields = new Set<string>();
-  for (const file of files) {
-    let ev: any;
-    try {
-      ev = readJSON(file);
-    } catch {
-      reasons.push(`evidence 文件无法解析: ${file}`);
-      return false;
-    }
-    const field = ev.asserted_field;
-    if (!field || !(field in assertions)) continue;
-    const expected = assertions[field];
-    const actual = getByPath(ev.raw_response, field.split('.').slice(-1)[0]) ?? getByPath(ev.raw_response, field);
-    if (String(actual) !== String(expected)) {
-      reasons.push(
-        `后端字段 ${field}: 期望 ${JSON.stringify(expected)}, 实际 ${JSON.stringify(actual)}`,
-      );
-      return false;
-    }
-    matchedFields.add(field);
-  }
-
-  // packet 中声明的每个断言都必须被至少一条原始证据覆盖
-  for (const field of Object.keys(assertions)) {
-    if (!matchedFields.has(field)) {
-      reasons.push(`期望断言 ${field} 无对应原始证据(未验证)`);
-      return false;
-    }
-  }
-  return true;
-}
-
-function emit(v: Record<string, unknown>): void {
-  const full = {
+  const output = {
+    schema_version: 1.1,
     computed_by: 'verdict-gate.ts',
     generated_at: new Date().toISOString(),
-    ...v,
+    verdict,
+    merge_allowed: verdict === 'PASS',
+    bug_id: packet.bug.id,
+    profile,
+    checks,
+    test_summary: currentRun,
+    evidence_count: events.length,
+    packet_sha256: sha256File(packetPath),
+    qc_sha: process.env.QC_SHA,
+    failure_classification: classification,
+    reasons,
+    partial_reasons: partialReasons,
+    blocked_reasons: blocked,
   };
   mkdirSync('artifacts', { recursive: true });
-  writeFileSync('artifacts/verdict.json', JSON.stringify(full, null, 2));
-  console.log(JSON.stringify(full, null, 2));
-  // 退出码:PASS=0,其余非0(供 CI final-verdict 判定)
-  process.exit(v.verdict === 'PASS' ? 0 : 1);
+  writeFileSync('artifacts/verdict.json', JSON.stringify(output, null, 2));
+  console.log(JSON.stringify(output, null, 2));
+  process.exit(verdict === 'PASS' ? 0 : 1);
 }
 
-main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

@@ -1,0 +1,37 @@
+schema_version: 1.1
+bug:
+  id: STO-190
+  title: 订单列表详情按钮文案错误
+  original_description: "订单列表详情按钮应显示“查看详情”，当前显示“查看”。"
+  source:
+    type: linear
+    uri: "linear://STO-190"
+    content_sha256: effd08fd2b52d5d9f052bf4bae86f77e5b9c2b29eb996971106da6af4b34cff8
+expected_business_result:
+  owner: 振英
+  confirmed_at: "2026-07-18T00:00:00+08:00"
+  source_uri: "linear://STO-190#oracle"
+  assertions_sha256: 03fd7f04a0f5a709d02006403656335cc63b5410d957fd09818d6ad9fda6bda9
+  assertions:
+    - id: order-detail-label
+      selector: /label
+      operator: equals
+      expected: 查看详情
+      required_collectors: [playwright_attachment]
+      min_independent_sources: 1
+environment:
+  target_system: nupai-store
+  base_url_env: STORE_E2E_BASE_URL
+  expected_environment_id: store-staging
+  allowed_hosts_env: STORE_E2E_ALLOWED_HOSTS
+git: { repo: houzhenying226-jpg/nupai-store }
+risk_claim: { declared_level: FAST }
+business_scope:
+  affected_contracts: [store.order.detail-label]
+  affected_spines: [SPINE-02]
+  affected_segments: [SEG-02A]
+counterfactual: { level: SKIP, reason_code: fast_ui_only }
+test_data:
+  namespace: e2e_STO_190
+  expires_after_hours: 24
+  cleanup_debt_limit: 2

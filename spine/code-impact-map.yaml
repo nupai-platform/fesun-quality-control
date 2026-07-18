@@ -19,7 +19,7 @@ code_impact_map:
     contracts:
       - store.task.completed
       - platform.progress.updated
-    segments: [SEG-02C, SEG-02D, SEG-03A]
+    segments: [SEG-02C, SEG-02D]
 
   "shared/order-status.ts":
     contracts: []
