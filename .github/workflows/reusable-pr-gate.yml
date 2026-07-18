@@ -184,9 +184,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: candidate-${{ inputs.project }}-${{ github.run_id }}-${{ github.run_attempt }}
+          # Keep the handoff name stable so a final-verdict-only rerun can reuse candidate artifacts.
+          name: candidate-${{ inputs.project }}-${{ github.run_id }}
           path: artifacts/
           retention-days: 1
+          overwrite: true
           if-no-files-found: error
 
   final-verdict:
@@ -225,8 +227,14 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: candidate-${{ inputs.project }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: candidate-${{ inputs.project }}-${{ github.run_id }}
           path: artifacts
+
+      - name: Restore candidate execution identity
+        if: always()
+        run: |
+          candidate_attempt="$(node --input-type=module -e "import{readFileSync}from'node:fs';try{const s=JSON.parse(readFileSync('artifacts/execution-state.json','utf8'));process.stdout.write(String(Number(s.retry_count??0)+1))}catch{process.stdout.write('')}" )"
+          echo "QC_CANDIDATE_ATTEMPT=${candidate_attempt:-$GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
 
       - name: Replace handoff Packet with exact candidate-head Packet
         if: always()
@@ -270,7 +278,9 @@ jobs:
           PLATFORM_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
           PLATFORM_E2E_ALLOWED_HOSTS: ${{ secrets.E2E_ALLOWED_HOSTS }}
           PLATFORM_E2E_READ_TOKEN: ${{ secrets.E2E_READ_TOKEN }}
-        run: .qc/node_modules/.bin/tsx .qc/scripts/collect-oracle-evidence.ts --packet artifacts/bug-packet.yaml
+        run: |
+          QC_RUN_ID="${GITHUB_RUN_ID}-${QC_CANDIDATE_ATTEMPT}-1" \
+            .qc/node_modules/.bin/tsx .qc/scripts/collect-oracle-evidence.ts --packet artifacts/bug-packet.yaml
 
       - name: Replay trusted CF-2 contract when declared
         if: always()
@@ -299,7 +309,9 @@ jobs:
           QC_HEAD_SHA: ${{ inputs.head_sha }}
           QC_SHA: ${{ job.workflow_sha }}
           QC_ENVIRONMENT_ID: ${{ inputs.environment_id }}
-        run: .qc/node_modules/.bin/tsx .qc/scripts/evidence-gate.ts --packet artifacts/bug-packet.yaml
+        run: |
+          QC_RUN_ID="${GITHUB_RUN_ID}-${QC_CANDIDATE_ATTEMPT}-1" \
+            .qc/node_modules/.bin/tsx .qc/scripts/evidence-gate.ts --packet artifacts/bug-packet.yaml
 
       - name: Compute sole final verdict
         if: always()
