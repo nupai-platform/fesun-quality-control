@@ -46,6 +46,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+          cache-dependency-path: .qc/package-lock.json
 
       - name: Install exact dependencies
         run: |
