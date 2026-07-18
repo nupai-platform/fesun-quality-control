@@ -57,7 +57,7 @@ jobs:
           npm ci --prefix testing/acceptance
 
       - name: Validate candidate workflow supply chain
-        run: node --import tsx .qc/scripts/validate-workflows.ts
+        run: node --import tsx .qc/scripts/validate-workflows.ts .github/workflows/acceptance-gate.yml
 
       - name: Derive immutable Packet hash
         id: packet
