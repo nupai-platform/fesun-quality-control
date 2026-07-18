@@ -37,7 +37,8 @@ export function validateWorkflows(files = globSync([
 }
 
 function main(): void {
-  const result = validateWorkflows();
+  const requestedFiles = process.argv.slice(2).filter((arg) => !arg.startsWith('-'));
+  const result = validateWorkflows(requestedFiles.length ? requestedFiles : undefined);
   console.log(JSON.stringify(result, null, 2));
   process.exit(result.ok ? 0 : 1);
 }
