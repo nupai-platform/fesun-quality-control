@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -72,4 +73,27 @@ test('Playwright report rejects zero tests, skips and retry-then-pass', () => {
   assert.equal(evaluatePlaywrightReport(pass).ok, true);
   const flaky = { suites: [{ specs: [{ title: 'retry', tests: [{ status: 'flaky', results: [{ status: 'failed' }, { status: 'passed' }] }] }] }] };
   assert.equal(evaluatePlaywrightReport(flaky).flaky, true);
+});
+
+test('verdict CLI converts an empty report artifact into BLOCKED JSON', () => {
+  const cwd = mkdtempSync(join(temporary, 'empty-report-'));
+  mkdirSync(join(cwd, 'artifacts'), { recursive: true });
+  writeFileSync(join(cwd, 'artifacts/report.json'), '');
+  const result = spawnSync(process.execPath, [
+    '--import', join(process.cwd(), 'node_modules/tsx/dist/loader.mjs'),
+    join(process.cwd(), 'scripts/verdict-gate.ts'),
+    '--packet', join(process.cwd(), packetPath),
+  ], {
+    cwd,
+    env: { ...process.env, QC_SHA: 'c'.repeat(40) },
+    encoding: 'utf8',
+  });
+  assert.notEqual(result.status, 0);
+  const verdict = JSON.parse(readFileSync(join(cwd, 'artifacts/verdict.json'), 'utf8')) as {
+    verdict: string; blocked_reasons: string[]; merge_allowed: boolean;
+  };
+  assert.equal(verdict.verdict, 'BLOCKED');
+  assert.equal(verdict.merge_allowed, false);
+  assert.match(verdict.blocked_reasons.join(' '), /artifacts\/report\.json 无法解析/);
+  rmSync(cwd, { recursive: true, force: true });
 });
