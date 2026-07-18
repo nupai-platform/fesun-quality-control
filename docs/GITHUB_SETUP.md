@@ -7,12 +7,13 @@
 适用仓库：`houzhenying226-jpg/nupai-crm`、`nupai-platform/-nupai-store`、`nupai-platform/fesun-mos`、`nupai-platform/fesun-platform`。
 
 1. 复制 `templates/adapters/<system>-acceptance-gate.yml` 到 `.github/workflows/acceptance-gate.yml`。
-2. 将 `__QC_COMMIT_SHA__` 替换为经过双审的完整 40 位 release commit；禁止 tag、branch 和可变 input。
-3. 创建受保护 Environment：`fesun-staging-acceptance`，限制允许分支/审批人。
-4. 在 Environment 内配置本系统五个命名 Secret：`*_E2E_BASE_URL`、`*_E2E_USERNAME`、`*_E2E_PASSWORD`、`*_E2E_READ_TOKEN`、`*_E2E_ALLOWED_HOSTS`。
-5. `*_E2E_READ_TOKEN` 只能 GET；数据库账号仅授予 `SELECT, SHOW VIEW`。候选测试 Job 永远收不到此 token。
-6. Ruleset 对 `main` 开启：禁止 force-push、禁止删除、至少一名 CODEOWNER review、所有 review thread resolved、Required Check `acceptance-gate / final-verdict`。
-7. Required Check 不按风险级拆分；PR 缺 Packet、0 tests 或环境失败时同一 Check 必须红/阻塞，不能 skipped/pending。
+2. 在业务仓库加入锁定的 `testing/acceptance/package.json` 与 `testing/acceptance/package-lock.json`，并把真实 Packet/spec 放在 `testing/acceptance/current/`；不能用空 spec。
+3. 将 `__QC_COMMIT_SHA__` 替换为经过双审的完整 40 位 release commit；禁止 tag、branch 和可变 input。
+4. 创建受保护 Environment：`fesun-staging-acceptance`，限制允许分支/审批人。
+5. 在 Environment 内配置本系统五个命名 Secret：`*_E2E_BASE_URL`、`*_E2E_USERNAME`、`*_E2E_PASSWORD`、`*_E2E_READ_TOKEN`、`*_E2E_ALLOWED_HOSTS`。
+6. `*_E2E_READ_TOKEN` 只能 GET；数据库账号仅授予 `SELECT, SHOW VIEW`。候选测试 Job 永远收不到此 token。
+7. Ruleset 对 `main` 开启：禁止 force-push、禁止删除、至少一名 CODEOWNER review、所有 review thread resolved、Required Check `acceptance-gate / final-verdict`。
+8. Required Check 不按风险级拆分；PR 缺 Packet、0 tests 或环境失败时同一 Check 必须红/阻塞，不能 skipped/pending。
 
 ## 真账字段
 

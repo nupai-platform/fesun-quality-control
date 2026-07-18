@@ -49,8 +49,12 @@ jobs:
 
       - name: Install exact dependencies
         run: |
-          npm ci
           npm ci --prefix .qc
+
+      - name: Install locked acceptance harness
+        run: |
+          test -f testing/acceptance/package-lock.json
+          npm ci --prefix testing/acceptance
 
       - name: Validate candidate workflow supply chain
         run: node --import tsx .qc/scripts/validate-workflows.ts
@@ -103,7 +107,7 @@ jobs:
 
       - name: Install Chromium
         continue-on-error: true
-        run: npx playwright install --with-deps chromium
+        run: npm --prefix testing/acceptance exec -- playwright install --with-deps chromium
 
       - name: Run 1 with machine evidence reporter
         continue-on-error: true
@@ -130,7 +134,7 @@ jobs:
         run: |
           mkdir -p artifacts/run-1
           set +e
-          npx playwright test "$QC_TEST_GLOB" --project=chromium --reporter=json,./.qc/reporters/playwright-evidence-reporter.ts > artifacts/run-1/report.json
+          npm --prefix testing/acceptance exec -- playwright test "$QC_TEST_GLOB" --project=chromium --reporter=json,./.qc/reporters/playwright-evidence-reporter.ts > artifacts/run-1/report.json
           status=$?
           set -e
           cp artifacts/run-1/report.json artifacts/report.json
@@ -162,7 +166,7 @@ jobs:
           PLATFORM_E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
         run: |
           mkdir -p artifacts/run-2
-          npx playwright test "$QC_TEST_GLOB" --project=chromium --reporter=json,./.qc/reporters/playwright-evidence-reporter.ts > artifacts/run-2/report.json
+          npm --prefix testing/acceptance exec -- playwright test "$QC_TEST_GLOB" --project=chromium --reporter=json,./.qc/reporters/playwright-evidence-reporter.ts > artifacts/run-2/report.json
 
       - name: Verify test worker did not mutate business code
         if: always()
