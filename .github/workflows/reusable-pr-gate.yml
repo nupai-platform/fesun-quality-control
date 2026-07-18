@@ -57,7 +57,7 @@ jobs:
           npm ci --prefix testing/acceptance
 
       - name: Validate candidate workflow supply chain
-        run: node --import tsx .qc/scripts/validate-workflows.ts .github/workflows/acceptance-gate.yml
+        run: .qc/node_modules/.bin/tsx .qc/scripts/validate-workflows.ts .github/workflows/acceptance-gate.yml
 
       - name: Derive immutable Packet hash
         id: packet
@@ -67,13 +67,13 @@ jobs:
           node --input-type=module -e "import{createHash}from'node:crypto';import{readFileSync}from'node:fs';import{appendFileSync}from'node:fs';appendFileSync(process.env.GITHUB_OUTPUT,'sha256='+createHash('sha256').update(readFileSync(process.env.QC_PACKET_PATH)).digest('hex')+'\n')"
 
       - name: Snapshot protected business files before test execution
-        run: node --import tsx .qc/scripts/detect-business-code-change.ts --mode runtime-snapshot --output artifacts/worktree-before.json
+        run: .qc/node_modules/.bin/tsx .qc/scripts/detect-business-code-change.ts --mode runtime-snapshot --output artifacts/worktree-before.json
 
       - name: Validate Packet
         continue-on-error: true
         env:
           QC_PACKET_PATH: ${{ inputs.bug_packet_path }}
-        run: node --import tsx .qc/scripts/validate-packet.ts --packet "$QC_PACKET_PATH"
+        run: .qc/node_modules/.bin/tsx .qc/scripts/validate-packet.ts --packet "$QC_PACKET_PATH"
 
       - name: Classify risk from Packet and exact PR diff
         id: risk
@@ -84,7 +84,7 @@ jobs:
           QC_HEAD_SHA: ${{ inputs.head_sha }}
         run: |
           set +e
-          node --import tsx .qc/scripts/classify-risk.ts --packet "$QC_PACKET_PATH" --base "$QC_BASE_SHA" --head "$QC_HEAD_SHA"
+          .qc/node_modules/.bin/tsx .qc/scripts/classify-risk.ts --packet "$QC_PACKET_PATH" --base "$QC_BASE_SHA" --head "$QC_HEAD_SHA"
           status=$?
           set -e
           node --input-type=module -e "import{readFileSync,appendFileSync}from'node:fs';const r=JSON.parse(readFileSync('artifacts/risk.json'));appendFileSync(process.env.GITHUB_OUTPUT,'profile='+(r.final_risk??'MANUAL_REVIEW')+'\n')"
@@ -94,11 +94,11 @@ jobs:
         continue-on-error: true
         env:
           QC_TEST_GLOB: ${{ inputs.test_glob }}
-        run: node --import tsx .qc/scripts/detect-weak-assertions.ts "$QC_TEST_GLOB"
+        run: .qc/node_modules/.bin/tsx .qc/scripts/detect-weak-assertions.ts "$QC_TEST_GLOB"
 
       - name: Scan orphan integrations
         continue-on-error: true
-        run: node --import tsx .qc/scripts/detect-orphan-integrations.ts --root . --map .qc/spine/code-impact-map.yaml
+        run: .qc/node_modules/.bin/tsx .qc/scripts/detect-orphan-integrations.ts --root . --map .qc/spine/code-impact-map.yaml
 
       - name: Create trusted execution envelope
         run: |
@@ -171,7 +171,7 @@ jobs:
       - name: Verify test worker did not mutate business code
         if: always()
         continue-on-error: true
-        run: node --import tsx .qc/scripts/detect-business-code-change.ts --mode runtime-verify --snapshot artifacts/worktree-before.json
+        run: .qc/node_modules/.bin/tsx .qc/scripts/detect-business-code-change.ts --mode runtime-verify --snapshot artifacts/worktree-before.json
 
       - name: Copy immutable Packet into handoff
         if: always()
@@ -241,12 +241,12 @@ jobs:
       - name: Revalidate Packet in trusted job
         if: always()
         continue-on-error: true
-        run: node --import tsx .qc/scripts/validate-packet.ts --packet artifacts/bug-packet.yaml
+        run: .qc/node_modules/.bin/tsx .qc/scripts/validate-packet.ts --packet artifacts/bug-packet.yaml
 
       - name: Enforce execution budget and TTL
         if: always()
         continue-on-error: true
-        run: node --import tsx .qc/scripts/execution-gate.ts --state artifacts/execution-state.json
+        run: .qc/node_modules/.bin/tsx .qc/scripts/execution-gate.ts --state artifacts/execution-state.json
 
       - name: Collect independent read-only Oracle evidence
         if: always()
@@ -269,7 +269,7 @@ jobs:
           PLATFORM_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
           PLATFORM_E2E_ALLOWED_HOSTS: ${{ secrets.E2E_ALLOWED_HOSTS }}
           PLATFORM_E2E_READ_TOKEN: ${{ secrets.E2E_READ_TOKEN }}
-        run: node --import tsx .qc/scripts/collect-oracle-evidence.ts --packet artifacts/bug-packet.yaml
+        run: .qc/node_modules/.bin/tsx .qc/scripts/collect-oracle-evidence.ts --packet artifacts/bug-packet.yaml
 
       - name: Replay trusted CF-2 contract when declared
         if: always()
@@ -287,7 +287,7 @@ jobs:
           PLATFORM_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
           PLATFORM_E2E_ALLOWED_HOSTS: ${{ secrets.E2E_ALLOWED_HOSTS }}
           PLATFORM_E2E_READ_TOKEN: ${{ secrets.E2E_READ_TOKEN }}
-        run: node --import tsx .qc/scripts/run-counterfactual.ts --packet artifacts/bug-packet.yaml
+        run: .qc/node_modules/.bin/tsx .qc/scripts/run-counterfactual.ts --packet artifacts/bug-packet.yaml
 
       - name: Verify evidence integrity and independent coverage
         if: always()
@@ -298,13 +298,13 @@ jobs:
           QC_HEAD_SHA: ${{ inputs.head_sha }}
           QC_SHA: ${{ job.workflow_sha }}
           QC_ENVIRONMENT_ID: ${{ inputs.environment_id }}
-        run: node --import tsx .qc/scripts/evidence-gate.ts --packet artifacts/bug-packet.yaml
+        run: .qc/node_modules/.bin/tsx .qc/scripts/evidence-gate.ts --packet artifacts/bug-packet.yaml
 
       - name: Compute sole final verdict
         if: always()
         env:
           QC_SHA: ${{ job.workflow_sha }}
-        run: node --import tsx .qc/scripts/verdict-gate.ts --packet artifacts/bug-packet.yaml
+        run: .qc/node_modules/.bin/tsx .qc/scripts/verdict-gate.ts --packet artifacts/bug-packet.yaml
 
       - name: Alert failure classification
         if: always()
@@ -314,7 +314,7 @@ jobs:
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_RUN_ID: ${{ github.run_id }}
-        run: node --import tsx .qc/scripts/emit-alert.ts
+        run: .qc/node_modules/.bin/tsx .qc/scripts/emit-alert.ts
 
       - name: Upload final evidence packet
         if: always()
