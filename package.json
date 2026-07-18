@@ -1,0 +1,32 @@
+{
+  "name": "fesun-quality-control",
+  "version": "1.1.0",
+  "private": true,
+  "description": "FESUN 四系统可信开发验收内核 v1.1 — 中央治理仓库(证据不可伪造 / 风险分级 / 脊柱回归 / CI 硬门禁)",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "classify-risk": "tsx scripts/classify-risk.ts",
+    "detect-weak-assertions": "tsx scripts/detect-weak-assertions.ts",
+    "detect-business-code-change": "tsx scripts/detect-business-code-change.ts",
+    "detect-orphan-integrations": "tsx scripts/detect-orphan-integrations.ts",
+    "evidence-gate": "tsx scripts/evidence-gate.ts",
+    "verdict-gate": "tsx scripts/verdict-gate.ts",
+    "selftest": "tsx scripts/selftest.ts"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "yaml": "^2.6.1",
+    "glob": "^11.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.0",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

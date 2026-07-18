@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://fesun.quality/schemas/evidence-event.schema.json",
+  "title": "FESUN Evidence Event v1.1",
+  "description": "由 Playwright 测试通过 test.info().attach('evidence',...) 落盘的原始证据。禁止携带任何布尔判定字段(如 backend_verified)。判定由 verdict-gate 独立复判。",
+  "type": "object",
+  "required": ["evidence_type", "raw_response"],
+  "additionalProperties": false,
+  "properties": {
+    "evidence_type": {
+      "type": "string",
+      "enum": [
+        "backend_query",
+        "network_response",
+        "cross_system_query",
+        "duplicate_count",
+        "reload_state",
+        "counterfactual"
+      ]
+    },
+    "system": {
+      "type": "string",
+      "enum": ["nupai-crm", "nupai-store", "nupai-mos", "fesun-platform"]
+    },
+    "record_id": {
+      "type": "string",
+      "description": "目标记录业务主键 / ID。必须与操作对象一致,禁止使用未知列表项。"
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string" },
+        "method": { "type": "string" },
+        "status": { "type": "number" },
+        "payload": {}
+      }
+    },
+    "raw_response": {
+      "description": "后端原始响应体,原样落盘,不做任何加工或判定。",
+      "type": ["object", "array", "string", "number", "boolean", "null"]
+    },
+    "asserted_field": {
+      "type": "string",
+      "description": "本条证据要复判的字段路径(点分),对应 bug-packet.expected_business_result.assertions 的键。"
+    },
+    "expected_from_packet": {
+      "description": "期望值来源必须是 bug-packet,仅作追溯记录;verdict-gate 以 packet 为准而非此字段。",
+      "type": ["string", "number", "boolean", "null"]
+    }
+  }
+}

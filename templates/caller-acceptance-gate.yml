@@ -1,0 +1,22 @@
+# 业务仓库调用模板 —— 放到各系统仓库 .github/workflows/acceptance-gate.yml
+#
+# 四个系统(nupai-crm / nupai-store / nupai-mos / fesun-platform)统一使用。
+# 唯一 Required Status Check 名称: acceptance-gate / final-verdict
+# 在仓库 Settings → Rules 中把该 check 设为合并必需。
+
+name: acceptance-gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+jobs:
+  final-verdict:
+    uses: houzhenying226-jpg/fesun-quality-control/.github/workflows/reusable-pr-gate.yml@v1.1.0
+    with:
+      project: nupai-store            # 改成本仓库名
+      bug_packet_path: testing/acceptance/bugs/STO-186/bug-packet.yaml   # 由 PR 识别脚本填入
+      base_sha: ${{ github.event.pull_request.base.sha }}
+      head_sha: ${{ github.event.pull_request.head.sha }}
+      qc_ref: v1.1.0
+    secrets: inherit

@@ -1,0 +1,150 @@
+# FESUN 可复用 PR 验收门禁 v1.1
+#
+# 业务仓库调用方式(必须锁 tag,禁止 @main):
+#   jobs:
+#     acceptance:
+#       uses: houzhenying226-jpg/fesun-quality-control/.github/workflows/reusable-pr-gate.yml@v1.1.0
+#       with:
+#         project: nupai-store
+#         bug_packet_path: testing/acceptance/bugs/STO-186/bug-packet.yaml
+#         base_sha: ${{ github.event.pull_request.base.sha }}
+#         head_sha: ${{ github.event.pull_request.head.sha }}
+#       secrets: inherit
+#
+# 唯一 Required Check 名称: acceptance-gate / final-verdict
+# PR 阶段只跑:风险分级 + 弱断言 + 业务代码修改 + Bug定点/契约测试 + 证据/裁判闸门。
+# 重型跨系统 E2E 不在 PR 跑(移至 main 后 / nightly),除非 PR 打 run-e2e 标签。
+
+name: reusable-pr-gate
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        required: true
+        type: string
+      bug_packet_path:
+        required: true
+        type: string
+      base_sha:
+        required: false
+        type: string
+        default: ""
+      head_sha:
+        required: false
+        type: string
+        default: ""
+      qc_ref:
+        description: "治理仓库版本(默认 v1.1.0,禁止用 main)"
+        required: false
+        type: string
+        default: "v1.1.0"
+    secrets:
+      E2E_BASE_URL:
+        required: false
+      E2E_USERNAME:
+        required: false
+      E2E_PASSWORD:
+        required: false
+
+jobs:
+  final-verdict:
+    name: final-verdict
+    runs-on: ubuntu-latest
+    timeout-minutes: 45          # 防僵尸 check 锁死合并
+    steps:
+      - name: Checkout 业务仓库(全历史,供 diff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout 治理内核(锁版本)
+        uses: actions/checkout@v4
+        with:
+          repository: houzhenying226-jpg/fesun-quality-control
+          ref: ${{ inputs.qc_ref }}
+          path: .qc
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 安装治理内核依赖
+        working-directory: .qc
+        run: npm ci || npm install
+
+      - name: 安装业务仓库依赖
+        run: npm ci || npm install
+
+      # ---- 1. 事实源 + 风险分级(缺事实源 → BLOCKED) ----
+      - name: 风险分级
+        id: risk
+        continue-on-error: true
+        run: |
+          node --import tsx .qc/scripts/classify-risk.ts \
+            --packet "${{ inputs.bug_packet_path }}" \
+            --base "${{ inputs.base_sha }}" --head "${{ inputs.head_sha }}" || true
+          cp -f artifacts/risk.json .qc/artifacts/ 2>/dev/null || true
+
+      # ---- 2. 静态机器闸门 ----
+      - name: 业务代码零修改检查
+        continue-on-error: true
+        run: node --import tsx .qc/scripts/detect-business-code-change.ts --base "${{ inputs.base_sha }}" --head "${{ inputs.head_sha }}" || true
+
+      - name: 弱断言扫描
+        continue-on-error: true
+        run: node --import tsx .qc/scripts/detect-weak-assertions.ts "testing/**/*.spec.ts" || true
+
+      - name: 孤儿集成检查
+        continue-on-error: true
+        run: node --import tsx .qc/scripts/detect-orphan-integrations.ts --root . --map .qc/spine/code-impact-map.yaml || true
+
+      # ---- 3. 运行测试(两次,产出 report.json + evidence-raw) ----
+      - name: 安装 Playwright 浏览器
+        run: npx playwright install --with-deps chromium || true
+
+      - name: RUN 1
+        continue-on-error: true
+        env:
+          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+        run: |
+          mkdir -p artifacts/run-1
+          npx playwright test --project=chromium \
+            --reporter=json,./.qc/reporters/playwright-evidence-reporter.ts \
+            2> artifacts/run-1/stderr.log > artifacts/run-1/report.json || true
+          cp -f artifacts/run-1/report.json artifacts/report.json 2>/dev/null || true
+
+      - name: RUN 2
+        continue-on-error: true
+        env:
+          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+        run: |
+          mkdir -p artifacts/run-2
+          npx playwright test --project=chromium \
+            --reporter=json \
+            > artifacts/run-2/report.json || true
+
+      # ---- 4. 证据闸门 ----
+      - name: 证据闸门
+        continue-on-error: true
+        run: node --import tsx .qc/scripts/evidence-gate.ts --profile "$(node -e "try{console.log(require('./artifacts/risk.json').final_risk||'STANDARD')}catch(e){console.log('STANDARD')}")" || true
+
+      # ---- 5. 唯一裁判(这一步的退出码决定 Required Check 成败) ----
+      - name: 计算最终裁定
+        run: |
+          node --import tsx .qc/scripts/verdict-gate.ts --packet "${{ inputs.bug_packet_path }}"
+
+      - name: 上传证据产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-artifacts-${{ inputs.project }}
+          path: |
+            artifacts/**
+            playwright-report/**
+          retention-days: 14

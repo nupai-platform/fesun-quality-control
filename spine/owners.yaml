@@ -1,0 +1,18 @@
+# 脊柱与系统 owner 表 v1.1
+# owner 负责:确认 expected_business_result、审批 spine-map 治理变更、CF-3 签字。
+
+schema_version: 1.1
+
+systems:
+  nupai-crm:      { owner: 振英 }
+  nupai-store:    { owner: 振英 }
+  nupai-mos:      { owner: 振英 }
+  fesun-platform: { owner: 振英 }
+
+spines:
+  SPINE-01: { owner: 振英 }
+  SPINE-02: { owner: 振英 }
+  SPINE-03: { owner: 振英 }
+  SPINE-04: { owner: 振英 }
+  SPINE-05: { owner: 振英 }
+  SPINE-06: { owner: 振英 }

@@ -1,0 +1,85 @@
+# FESUN 业务脊柱地图 v1.1
+#
+# 治理原则:
+#   - 链条【结构】(哪些跨系统调用点存在)最终以代码 AST 为准,由 detect-orphan-integrations 兜底核对。
+#   - 链条【语义】(叫什么、owner、什么算完成)由人工在此标注。
+#   - 本文件的修改属于"治理变更",不得与普通 Bug PR 混在同一 PR,需 owner review。
+#   - AI 只能提议【增加】,不能删除已登记 segment/contract。
+#
+# 状态:v1.1 首批冻结 3 条最高价值脊柱(SPINE-02 完整拆段,其余占位)。
+#       其余脊柱(SPINE-01/03/04/05/06)先登记骨架,后续分批补全 segment。
+
+schema_version: 1.1
+
+spines:
+  SPINE-01:
+    name: 客户到订单
+    criticality: critical
+    systems: [nupai-crm, fesun-platform]
+    status: skeleton
+    segments: []
+
+  SPINE-02:
+    name: 门店履约(订单→预约→量体→状态同步)
+    criticality: critical
+    systems: [nupai-crm, nupai-store, fesun-platform]
+    status: frozen
+    segments:
+      SEG-02A:
+        name: CRM订单生成Store任务
+        systems: [nupai-crm, nupai-store]
+        contracts: [crm.order.created, store.task.created]
+        tests:
+          - testing/contracts/order-created.spec.ts
+      SEG-02B:
+        name: Store预约并进入量体
+        systems: [nupai-store]
+        contracts: [store.appointment.created]
+        tests:
+          - testing/acceptance/appointment.spec.ts
+      SEG-02C:
+        name: 量体完成并持久化
+        systems: [nupai-store]
+        contracts: [store.measurement.completed, store.task.status]
+        tests:
+          - testing/acceptance/bugs/STO-186/STO-186.spec.ts
+      SEG-02D:
+        name: 完成事件同步Platform
+        systems: [nupai-store, fesun-platform]
+        contracts: [store.task.completed, platform.progress.updated]
+        tests:
+          - testing/cross-system/spine-02/seg-02d.spec.ts
+      SEG-02E:
+        name: 重新登录后各系统状态一致
+        systems: [nupai-store, fesun-platform, nupai-crm]
+        contracts: [platform.progress.updated]
+        tests:
+          - testing/cross-system/spine-02/seg-02e.spec.ts
+
+  SPINE-03:
+    name: 订单到生产
+    criticality: critical
+    systems: [fesun-platform, nupai-store]
+    status: skeleton
+    segments: []
+
+  SPINE-04:
+    name: 交付闭环
+    criticality: critical
+    systems: [fesun-platform, nupai-store, nupai-crm]
+    status: skeleton
+    segments: []
+
+  SPINE-05:
+    name: 售后闭环
+    criticality: critical
+    systems: [nupai-crm, nupai-store, fesun-platform]
+    status: skeleton
+    segments: []
+
+  SPINE-06:
+    name: 内容生产(Platform→MOS)
+    criticality: standard
+    systems: [fesun-platform, nupai-mos]
+    status: skeleton
+    segments: []

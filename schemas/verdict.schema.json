@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://fesun.quality/schemas/verdict.schema.json",
+  "title": "FESUN Verdict v1.1",
+  "description": "verdict-gate.ts 的唯一输出。机器生成,AI 不得写入。GitHub Required Check 只读此文件的 merge_allowed。",
+  "type": "object",
+  "required": ["verdict", "merge_allowed", "computed_by", "generated_at"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["PASS", "FAIL", "BLOCKED", "PARTIAL"]
+    },
+    "merge_allowed": { "type": "boolean" },
+    "bug_id": { "type": "string" },
+    "profile": {
+      "type": "string",
+      "enum": ["FAST", "STANDARD", "CRITICAL", "CROSS_SYSTEM", "MANUAL_REVIEW"]
+    },
+    "computed_by": {
+      "type": "string",
+      "const": "verdict-gate.ts",
+      "description": "证明由机器计算。任何非此值一律视为伪造并拒绝。"
+    },
+    "generated_at": { "type": "string" },
+    "checks": {
+      "type": "object",
+      "description": "每一项都来自不可伪造产物(exit code / playwright report.json / evidence-raw / git diff),不来自 AI 声明。",
+      "additionalProperties": false,
+      "properties": {
+        "all_tests_passed": { "type": "boolean" },
+        "backend_assertions_matched": { "type": "boolean" },
+        "no_business_code_change": { "type": "boolean" },
+        "no_weak_assertions": { "type": "boolean" },
+        "run_1_passed": { "type": "boolean" },
+        "run_2_passed": { "type": "boolean" },
+        "counterfactual_ok": { "type": "boolean" },
+        "no_orphan_integrations": { "type": "boolean" }
+      }
+    },
+    "bug_acceptance": {
+      "type": "string",
+      "enum": ["PASS", "FAIL", "BLOCKED", "PARTIAL", "N/A"]
+    },
+    "regression": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "enum": ["PASS", "FAIL", "SKIP"] }
+    },
+    "failure_classification": {
+      "type": "string",
+      "enum": [
+        "PRODUCT_BUG",
+        "REGRESSION_PRODUCT_BUG",
+        "TEST_BUG",
+        "TEST_WORKER_MODIFIED_BUSINESS_CODE",
+        "WEAK_ASSERTION",
+        "ENVIRONMENT",
+        "DATA",
+        "PERMISSION",
+        "DEPENDENCY",
+        "FLAKY",
+        "INSUFFICIENT_EVIDENCE",
+        "UNMAPPED_INTEGRATION",
+        "MISSING_FACT_SOURCE",
+        "UNKNOWN"
+      ]
+    },
+    "reasons": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "unverified_core_items": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    }
+  }
+}

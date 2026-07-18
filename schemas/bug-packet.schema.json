@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://fesun.quality/schemas/bug-packet.schema.json",
+  "title": "FESUN Bug Packet v1.1",
+  "description": "单一 Bug 事实源。FAST 级只需 bug 块;写操作类 Bug 必须提供 expected_business_result。缺 original_description 或 expected_business_result(非 FAST)→ BLOCKED。",
+  "type": "object",
+  "required": ["schema_version", "bug"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "number",
+      "const": 1.1
+    },
+    "bug": {
+      "type": "object",
+      "required": ["id", "title", "original_description"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z]{2,5}-[0-9]+$",
+          "description": "如 STO-186 / CRM-42 / FSN-601"
+        },
+        "title": { "type": "string", "minLength": 3 },
+        "original_description": {
+          "type": "string",
+          "minLength": 5,
+          "description": "原始错误现象。必须由人类/系统提供,AI 不得编造。缺失 → BLOCKED。"
+        },
+        "source": {
+          "oneOf": [
+            { "type": "string", "enum": ["linear", "user_report", "manual", "monitoring"] },
+            {
+              "type": "object",
+              "required": ["type"],
+              "additionalProperties": false,
+              "properties": {
+                "type": { "type": "string", "enum": ["linear", "user_report", "manual", "monitoring"] },
+                "reporter": { "type": "string" },
+                "ai_may_edit": { "type": "boolean", "default": false }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "expected_business_result": {
+      "type": "object",
+      "description": "预期最终业务结果。写操作类 Bug 必填,否则 verdict-gate 无法独立复判后端字段。",
+      "required": ["assertions"],
+      "additionalProperties": false,
+      "properties": {
+        "owner": { "type": "string" },
+        "confirmed_at": { "type": "string" },
+        "ai_may_edit": { "type": "boolean", "default": false },
+        "assertions": {
+          "type": "object",
+          "minProperties": 1,
+          "description": "键=后端记录字段路径(点分),值=期望具体值。禁止布尔占位。verdict-gate 用它复判 evidence-raw。",
+          "additionalProperties": {
+            "type": ["string", "number", "boolean", "null"]
+          }
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "target_system": {
+          "type": "string",
+          "enum": ["nupai-crm", "nupai-store", "nupai-mos", "fesun-platform"]
+        },
+        "base_url_env": { "type": "string" },
+        "account": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "username_env": { "type": "string" },
+            "password_env": { "type": "string" },
+            "role": { "type": "string" }
+          }
+        }
+      }
+    },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repo": { "type": "string" },
+        "base_commit": { "type": "string" },
+        "fixed_commit": { "type": "string" }
+      }
+    },
+    "risk_claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "declared_level": {
+          "type": "string",
+          "enum": ["FAST", "STANDARD", "CRITICAL", "CROSS_SYSTEM", "MANUAL_REVIEW"]
+        }
+      }
+    },
+    "business_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "affected_contracts": { "type": "array", "items": { "type": "string" } },
+        "affected_spines": { "type": "array", "items": { "type": "string" } },
+        "affected_segments": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "counterfactual": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": { "type": "string", "enum": ["CF-1", "CF-2", "CF-3", "SKIP"] },
+        "reason_code": { "type": "string" }
+      }
+    },
+    "test_data": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "namespace": { "type": "string", "pattern": "^e2e_[A-Za-z0-9_]+$" },
+        "expires_after_hours": { "type": "number", "default": 72 }
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+# 代码→契约→脊柱片段 影响映射 v1.1
+#
+# detect-orphan-integrations 与 analyze-impact(后续)据此把 git diff 映射到测试范围。
+# 每个跨系统集成点(event publish / consumer handler)必须在此登记其 contract。
+# 未登记的集成点 → UNMAPPED_INTEGRATION → 阻止合并。
+#
+# 首批只登记 SPINE-02 已知路径(示例基于 nupai-store 结构,实际路径以各仓库为准)。
+
+schema_version: 1.1
+
+code_impact_map:
+  "backend/services/measurement_service.py":
+    contracts:
+      - store.measurement.completed
+      - store.task.status
+    segments: [SEG-02B, SEG-02C, SEG-02D]
+
+  "backend/events/task_completed.py":
+    contracts:
+      - store.task.completed
+      - platform.progress.updated
+    segments: [SEG-02C, SEG-02D, SEG-03A]
+
+  "shared/order-status.ts":
+    contracts: []
+    spines: [SPINE-01, SPINE-02, SPINE-03, SPINE-04]
+
+# 回归选择规则(供 analyze-impact 读取):
+regression_rules:
+  - match: "**/*.md"                       # 纯文档
+    run: [none]
+  - match: "**/*.{css,scss}"               # 纯样式
+    run: [bug_spot]
+  - match: "**/api/**"                     # API payload
+    run: [bug_spot, current_segment, upstream_one, downstream_one, contract]
+  - match: "**/services/**"                # Service / 共享 Store
+    run: [bug_spot, all_referencing_segments]
+  - match: "**/{migrations,events,permissions}/**"  # 数据模型/事件/权限
+    run: [bug_spot, affected_spine_full]
+  - match: "**/{integrations,consumers,sync}/**"    # 跨系统契约
+    run: [contract_producer, contract_consumer, sync_segments]
