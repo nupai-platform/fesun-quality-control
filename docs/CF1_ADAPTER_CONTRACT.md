@@ -14,7 +14,7 @@
 
 业务仓库 caller 必须显式声明 `cf1_adapter` 与 `cf1_test_path`。当前内核已安装的适配器：
 
-- `nupai-crm`：在 trusted QC job 中为 base/fixed commit 建立隔离 worktree，复制同一 Playwright 测试，分别构建前端并运行测试；该适配器不接收任何 E2E Secret。
+- `nupai-crm`：在 trusted QC job 中为 base/fixed commit 建立隔离 worktree，复制同一 Playwright 测试和固定验收 harness，分别构建前端并运行测试；该适配器不接收任何 E2E Secret。
 
 未声明适配器、路径越界、commit 不可解析、旧版本未命中预期失败签名或 fixed 版本未通过时，适配器必须失败，不能生成 PASS 产物。
 
