@@ -130,7 +130,7 @@ function runCrmVersion(worktree: string, testPath: string, port: number): { pass
     waitForServer(`http://127.0.0.1:${port}/accounts`, server, logPath);
     const result = run('npm', [
       '--prefix', 'testing/acceptance', 'exec', '--', 'playwright', 'test', testPath,
-      '--config', 'frontend/playwright.config.ts', '--project', 'chromium', '--reporter=json', '--retries=0',
+      '--config', 'frontend/playwright.config.ts', '--reporter=json', '--retries=0',
     ], worktree, env);
     return { passed: result.status === 0, output: result.output };
   } catch (error) {
