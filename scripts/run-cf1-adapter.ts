@@ -111,9 +111,17 @@ function waitForServer(url: string, process: ChildProcess, logPath: string): voi
 function runCrmVersion(worktree: string, testPath: string, port: number): { passed: boolean; output: string } {
   // The adapter needs the test toolchain (TypeScript/Playwright) installed;
   // NODE_ENV=production would make npm ci omit devDependencies.
-  const env = { ...cleanEnv(`http://127.0.0.1:${port}`), NODE_ENV: 'development' };
+  const env = {
+    ...cleanEnv(`http://127.0.0.1:${port}`),
+    NODE_ENV: 'development',
+    NODE_PATH: join(worktree, 'testing/acceptance/node_modules'),
+  };
   runChecked('npm', ['ci', '--prefix', 'testing/acceptance'], worktree, env);
   runChecked('npm', ['ci', '--prefix', 'frontend'], worktree, env);
+  // The acceptance harness is the single trusted Playwright runtime. Remove
+  // the app's duplicate copy so config and test files cannot load two runners.
+  rmSync(join(worktree, 'frontend/node_modules/playwright'), { recursive: true, force: true });
+  rmSync(join(worktree, 'frontend/node_modules/@playwright'), { recursive: true, force: true });
   // CF-1 is a route-level counterfactual. A full production build would
   // compile unrelated legacy routes and can fail before the target page is
   // exercised. Start the development server instead so Next compiles only
