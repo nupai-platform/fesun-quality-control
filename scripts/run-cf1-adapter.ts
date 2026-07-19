@@ -101,11 +101,14 @@ function runCrmVersion(worktree: string, testPath: string, port: number): { pass
   // compile unrelated legacy routes and can fail before the target page is
   // exercised. Start the development server instead so Next compiles only
   // the requested route while preserving the exact application commit.
-  const server = spawn('npm', ['run', 'dev', '--prefix', 'frontend', '--', '-p', String(port)], {
+  const server = spawn('npm', ['run', 'dev', '--prefix', 'frontend', '--', '-H', '127.0.0.1', '-p', String(port)], {
     cwd: worktree,
     env: { ...env, NODE_ENV: 'development' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  let serverOutput = '';
+  server.stdout?.on('data', (chunk: Buffer) => { serverOutput += chunk.toString(); });
+  server.stderr?.on('data', (chunk: Buffer) => { serverOutput += chunk.toString(); });
   try {
     waitForServer(`http://127.0.0.1:${port}/accounts`, server);
     const result = run('npm', [
@@ -113,6 +116,8 @@ function runCrmVersion(worktree: string, testPath: string, port: number): { pass
       '--config', 'frontend/playwright.config.ts', '--project', 'chromium', '--reporter=json', '--retries=0',
     ], worktree, env);
     return { passed: result.status === 0, output: result.output };
+  } catch (error) {
+    throw new Error(`${(error as Error).message}\nfrontend server output:\n${serverOutput.slice(-8000)}`);
   } finally {
     server.kill('SIGTERM');
     server.stdout?.destroy();
