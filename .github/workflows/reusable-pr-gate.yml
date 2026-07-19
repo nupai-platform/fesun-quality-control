@@ -9,6 +9,8 @@ on:
       environment_id: { required: true, type: string }
       base_sha: { required: true, type: string }
       head_sha: { required: true, type: string }
+      cf1_adapter: { required: false, type: string, default: '' }
+      cf1_test_path: { required: false, type: string, default: '' }
     secrets:
       E2E_BASE_URL: { required: false }
       E2E_USERNAME: { required: false }
@@ -213,7 +215,7 @@ jobs:
         with:
           ref: ${{ inputs.head_sha }}
           path: .candidate
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -283,7 +285,7 @@ jobs:
             .qc/node_modules/.bin/tsx .qc/scripts/collect-oracle-evidence.ts --packet artifacts/bug-packet.yaml
 
       - name: Replay trusted CF-2 contract when declared
-        if: always()
+        if: always() && inputs.cf1_adapter == ''
         continue-on-error: true
         env:
           STORE_E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
@@ -299,6 +301,21 @@ jobs:
           PLATFORM_E2E_ALLOWED_HOSTS: ${{ secrets.E2E_ALLOWED_HOSTS }}
           PLATFORM_E2E_READ_TOKEN: ${{ secrets.E2E_READ_TOKEN }}
         run: .qc/node_modules/.bin/tsx .qc/scripts/run-counterfactual.ts --packet artifacts/bug-packet.yaml
+
+      - name: Run trusted CF-1 system adapter when declared
+        if: always()
+        continue-on-error: true
+        env:
+          QC_CF1_ADAPTER: ${{ inputs.cf1_adapter }}
+          QC_CF1_TEST_PATH: ${{ inputs.cf1_test_path }}
+          QC_CANDIDATE_ROOT: .candidate
+          QC_BASE_SHA: ${{ inputs.base_sha }}
+          QC_HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          if [ -n "${QC_CF1_ADAPTER:-}" ]; then
+            npm --prefix .candidate/testing/acceptance exec -- playwright install --with-deps chromium
+          fi
+          .qc/node_modules/.bin/tsx .qc/scripts/run-cf1-adapter.ts --packet artifacts/bug-packet.yaml
 
       - name: Verify evidence integrity and independent coverage
         if: always()
