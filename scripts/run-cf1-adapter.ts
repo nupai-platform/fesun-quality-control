@@ -1,5 +1,5 @@
 /** Run a pinned system CF-1 adapter in isolated base/fixed worktrees. */
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
@@ -76,11 +76,16 @@ function cleanEnv(baseUrl: string): NodeJS.ProcessEnv {
   return env;
 }
 
-function waitForServer(url: string, process: ChildProcess): void {
+function waitForServer(url: string, process: ChildProcess, logPath: string): void {
   const deadline = Date.now() + 90_000;
   let lastError = '';
   while (Date.now() < deadline) {
-    if (process.exitCode !== null) throw new Error(`frontend server exited early: ${lastError}`);
+    const alive = spawnSync('ps', ['-p', String(process.pid), '-o', 'pid='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).status === 0;
+    if (!alive) {
+      let output = '';
+      try { output = readFileSync(logPath, 'utf8').slice(-4000); } catch { /* preserve primary error */ }
+      throw new Error(`frontend server exited early: ${lastError}\n${output}`);
+    }
     try {
       const result = spawnSync('curl', ['-fsS', '--max-time', '3', url], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
       if (result.status === 0) return;
@@ -101,27 +106,28 @@ function runCrmVersion(worktree: string, testPath: string, port: number): { pass
   // compile unrelated legacy routes and can fail before the target page is
   // exercised. Start the development server instead so Next compiles only
   // the requested route while preserving the exact application commit.
-  const server = spawn('npm', ['run', 'dev', '--prefix', 'frontend', '--', '-H', '127.0.0.1', '-p', String(port)], {
+  const logPath = join(worktree, `.fesun-cf1-server-${port}.log`);
+  const logFd = openSync(logPath, 'w');
+  const server = spawn('npm', ['--prefix', 'frontend', 'run', 'dev', '--', '-H', '127.0.0.1', '-p', String(port)], {
     cwd: worktree,
     env: { ...env, NODE_ENV: 'development' },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', logFd, logFd],
   });
-  let serverOutput = '';
-  server.stdout?.on('data', (chunk: Buffer) => { serverOutput += chunk.toString(); });
-  server.stderr?.on('data', (chunk: Buffer) => { serverOutput += chunk.toString(); });
+  closeSync(logFd);
   try {
-    waitForServer(`http://127.0.0.1:${port}/accounts`, server);
+    waitForServer(`http://127.0.0.1:${port}/accounts`, server, logPath);
     const result = run('npm', [
       '--prefix', 'testing/acceptance', 'exec', '--', 'playwright', 'test', testPath,
       '--config', 'frontend/playwright.config.ts', '--project', 'chromium', '--reporter=json', '--retries=0',
     ], worktree, env);
     return { passed: result.status === 0, output: result.output };
   } catch (error) {
+    let serverOutput = '';
+    try { serverOutput = readFileSync(logPath, 'utf8'); } catch { /* preserve primary error */ }
     throw new Error(`${(error as Error).message}\nfrontend server output:\n${serverOutput.slice(-8000)}`);
   } finally {
     server.kill('SIGTERM');
-    server.stdout?.destroy();
-    server.stderr?.destroy();
+    rmSync(logPath, { force: true });
   }
 }
 
