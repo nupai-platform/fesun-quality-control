@@ -52,6 +52,16 @@ function copyExactTest(candidateRoot: string, worktree: string, testPath: string
   return sha256File(source);
 }
 
+function copyAcceptanceHarness(candidateRoot: string, worktree: string): void {
+  for (const file of ['testing/acceptance/package.json', 'testing/acceptance/package-lock.json']) {
+    const source = join(candidateRoot, file);
+    const destination = join(worktree, file);
+    if (!existsSync(source)) throw new Error(`fixed commit 缺少 acceptance harness file: ${file}`);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(source, destination);
+  }
+}
+
 function cleanEnv(baseUrl: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -129,6 +139,10 @@ function runAdapter(packetPath: string): Record<string, unknown> | undefined {
     runChecked('git', ['-C', candidateRoot, 'worktree', 'add', '--detach', fixedWorktree, fixedSha], candidateRoot, env);
     const testSha = copyExactTest(candidateRoot, baseWorktree, testPath);
     copyExactTest(candidateRoot, fixedWorktree, testPath);
+    // Old commits may predate the harness; use the immutable fixed-commit harness
+    // in both worktrees, while keeping the application source at each exact SHA.
+    copyAcceptanceHarness(candidateRoot, baseWorktree);
+    copyAcceptanceHarness(candidateRoot, fixedWorktree);
 
     const baseline = runCrmVersion(baseWorktree, testPath, 3100);
     if (baseline.passed || !expectedCrmFailure(baseline.output)) {
