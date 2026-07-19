@@ -109,7 +109,9 @@ function waitForServer(url: string, process: ChildProcess, logPath: string): voi
 }
 
 function runCrmVersion(worktree: string, testPath: string, port: number): { passed: boolean; output: string } {
-  const env = cleanEnv(`http://127.0.0.1:${port}`);
+  // The adapter needs the test toolchain (TypeScript/Playwright) installed;
+  // NODE_ENV=production would make npm ci omit devDependencies.
+  const env = { ...cleanEnv(`http://127.0.0.1:${port}`), NODE_ENV: 'development' };
   runChecked('npm', ['ci', '--prefix', 'testing/acceptance'], worktree, env);
   runChecked('npm', ['ci', '--prefix', 'frontend'], worktree, env);
   // CF-1 is a route-level counterfactual. A full production build would
@@ -120,7 +122,7 @@ function runCrmVersion(worktree: string, testPath: string, port: number): { pass
   const logFd = openSync(logPath, 'w');
   const server = spawn('npm', ['--prefix', 'frontend', 'run', 'dev', '--', '-H', '127.0.0.1', '-p', String(port)], {
     cwd: worktree,
-    env: { ...env, NODE_ENV: 'development' },
+    env,
     stdio: ['ignore', logFd, logFd],
   });
   closeSync(logFd);
