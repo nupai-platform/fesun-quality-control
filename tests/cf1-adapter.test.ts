@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { expectedCrmFailure, safeRelativePath } from '../scripts/run-cf1-adapter.ts';
+import { expectedCrmFailure, safeRelativePath } from '../scripts/cf1-adapter-guards.ts';
 
 test('CRM CF-1 adapter only accepts the expected old URL assertion failure', () => {
   assert.equal(expectedCrmFailure('expect(page).toHaveURL(/region=cn_bj/)'), true);
