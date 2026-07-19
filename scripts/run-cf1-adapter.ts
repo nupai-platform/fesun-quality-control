@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { readYAML, sha256File, type BugPacket } from './lib.ts';
+import { expectedCrmFailure, safeRelativePath } from './cf1-adapter-guards.ts';
 
 type CommandResult = { status: number; output: string };
 
@@ -34,13 +35,6 @@ function runChecked(command: string, args: string[], cwd: string, env: NodeJS.Pr
   return result.output;
 }
 
-function safeRelativePath(value: string): string {
-  if (!value || value.startsWith('/') || value.includes('\\') || value.split('/').includes('..')) {
-    throw new Error(`不安全的 test path: ${value}`);
-  }
-  return value;
-}
-
 function assertCommit(repo: string, sha: string): void {
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`commit 必须是完整 SHA: ${sha}`);
   const resolved = run('git', ['-C', repo, 'rev-parse', '--verify', `${sha}^{commit}`], repo);
@@ -56,11 +50,6 @@ function copyExactTest(candidateRoot: string, worktree: string, testPath: string
   mkdirSync(dirname(destination), { recursive: true });
   copyFileSync(source, destination);
   return sha256File(source);
-}
-
-function expectedCrmFailure(output: string): boolean {
-  // The adapter must observe the old broken URL assertion, not merely any failed test.
-  return output.includes('region=cn_bj') && output.includes('toHaveURL');
 }
 
 function cleanEnv(baseUrl: string): NodeJS.ProcessEnv {
@@ -178,5 +167,3 @@ function main(): void {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try { main(); } catch (error) { console.error((error as Error).message); process.exit(1); }
 }
-
-export { expectedCrmFailure, safeRelativePath };
