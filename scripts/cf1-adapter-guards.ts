@@ -8,6 +8,9 @@ export function safeRelativePath(value: string): string {
 }
 
 export function expectedCrmFailure(output: string): boolean {
-  // The adapter must observe the old broken URL assertion, not merely any failed test.
-  return output.includes('region=cn_bj') && output.includes('toHaveURL');
+  // Accept only the two concrete legacy signatures observed for this test:
+  // the older URL assertion or the pre-filter UI missing the region control.
+  const oldUrlAssertion = output.includes('region=cn_bj') && output.includes('toHaveURL');
+  const missingRegionControl = output.includes('account-region-filter') && output.includes('toBeVisible');
+  return oldUrlAssertion || missingRegionControl;
 }
