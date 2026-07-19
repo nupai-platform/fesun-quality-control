@@ -1,0 +1,182 @@
+/** Run a pinned system CF-1 adapter in isolated base/fixed worktrees. */
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import { readYAML, sha256File, type BugPacket } from './lib.ts';
+
+type CommandResult = { status: number; output: string };
+
+function arg(flag: string): string | undefined {
+  const args = process.argv.slice(2);
+  const index = args.indexOf(flag);
+  return index >= 0 ? args[index + 1] : undefined;
+}
+
+function run(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = process.env): CommandResult {
+  const result = spawnSync(command, args, {
+    cwd,
+    env,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  return {
+    status: result.status ?? 1,
+    output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
+  };
+}
+
+function runChecked(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): string {
+  const result = run(command, args, cwd, env);
+  if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed:\n${result.output.slice(-8000)}`);
+  return result.output;
+}
+
+function safeRelativePath(value: string): string {
+  if (!value || value.startsWith('/') || value.includes('\\') || value.split('/').includes('..')) {
+    throw new Error(`不安全的 test path: ${value}`);
+  }
+  return value;
+}
+
+function assertCommit(repo: string, sha: string): void {
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`commit 必须是完整 SHA: ${sha}`);
+  const resolved = run('git', ['-C', repo, 'rev-parse', '--verify', `${sha}^{commit}`], repo);
+  if (resolved.status !== 0 || resolved.output.trim() !== sha) {
+    throw new Error(`candidate checkout 缺少精确 commit: ${sha}`);
+  }
+}
+
+function copyExactTest(candidateRoot: string, worktree: string, testPath: string): string {
+  const source = join(candidateRoot, testPath);
+  const destination = join(worktree, testPath);
+  if (!existsSync(source)) throw new Error(`fixed commit 缺少 test file: ${testPath}`);
+  mkdirSync(dirname(destination), { recursive: true });
+  copyFileSync(source, destination);
+  return sha256File(source);
+}
+
+function expectedCrmFailure(output: string): boolean {
+  // The adapter must observe the old broken URL assertion, not merely any failed test.
+  return output.includes('region=cn_bj') && output.includes('toHaveURL');
+}
+
+function cleanEnv(baseUrl: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CI: '1',
+    NODE_ENV: 'production',
+    NEXT_TELEMETRY_DISABLED: '1',
+    PLAYWRIGHT_BASE_URL: baseUrl,
+  };
+  for (const key of Object.keys(env)) {
+    if (/TOKEN|PASSWORD|SECRET|COOKIE|AUTHORIZATION|API_KEY/i.test(key)) delete env[key];
+  }
+  return env;
+}
+
+function waitForServer(url: string, process: ChildProcess): void {
+  const deadline = Date.now() + 90_000;
+  let lastError = '';
+  while (Date.now() < deadline) {
+    if (process.exitCode !== null) throw new Error(`frontend server exited early: ${lastError}`);
+    try {
+      const result = spawnSync('curl', ['-fsS', '--max-time', '3', url], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      if (result.status === 0) return;
+      lastError = result.stderr || result.stdout || `curl status ${result.status}`;
+    } catch (error) {
+      lastError = (error as Error).message;
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
+  }
+  throw new Error(`frontend server did not become ready: ${lastError}`);
+}
+
+function runCrmVersion(worktree: string, testPath: string, port: number): { passed: boolean; output: string } {
+  const env = cleanEnv(`http://127.0.0.1:${port}`);
+  runChecked('npm', ['ci', '--prefix', 'testing/acceptance'], worktree, env);
+  runChecked('npm', ['ci', '--prefix', 'frontend'], worktree, env);
+  runChecked('npm', ['run', 'build', '--prefix', 'frontend'], worktree, env);
+  const server = spawn('npm', ['run', 'start', '--prefix', 'frontend', '--', '-p', String(port)], {
+    cwd: worktree,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    waitForServer(`http://127.0.0.1:${port}/accounts`, server);
+    const result = run('npm', [
+      '--prefix', 'testing/acceptance', 'exec', '--', 'playwright', 'test', testPath,
+      '--config', 'frontend/playwright.config.ts', '--project', 'chromium', '--reporter=json', '--retries=0',
+    ], worktree, env);
+    return { passed: result.status === 0, output: result.output };
+  } finally {
+    server.kill('SIGTERM');
+    server.stdout?.destroy();
+    server.stderr?.destroy();
+  }
+}
+
+function runAdapter(packetPath: string): Record<string, unknown> | undefined {
+  const packet = readYAML<BugPacket>(packetPath);
+  if (packet.counterfactual?.level !== 'CF-1') return undefined;
+  const adapter = process.env.QC_CF1_ADAPTER;
+  if (adapter !== 'nupai-crm') throw new Error(`未安装可信 CF-1 adapter: ${adapter || '(empty)'}`);
+  const candidateRoot = resolve(process.env.QC_CANDIDATE_ROOT || '.candidate');
+  const baseSha = process.env.QC_BASE_SHA;
+  const fixedSha = process.env.QC_HEAD_SHA;
+  const testPath = safeRelativePath(process.env.QC_CF1_TEST_PATH || '');
+  if (!baseSha || !fixedSha) throw new Error('CF-1 缺 base/head SHA');
+  assertCommit(candidateRoot, baseSha);
+  assertCommit(candidateRoot, fixedSha);
+
+  const root = mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), 'fesun-cf1-crm-'));
+  const baseWorktree = join(root, 'base');
+  const fixedWorktree = join(root, 'fixed');
+  const env = cleanEnv('http://127.0.0.1:0');
+  try {
+    runChecked('git', ['-C', candidateRoot, 'worktree', 'add', '--detach', baseWorktree, baseSha], candidateRoot, env);
+    runChecked('git', ['-C', candidateRoot, 'worktree', 'add', '--detach', fixedWorktree, fixedSha], candidateRoot, env);
+    const testSha = copyExactTest(candidateRoot, baseWorktree, testPath);
+    copyExactTest(candidateRoot, fixedWorktree, testPath);
+
+    const baseline = runCrmVersion(baseWorktree, testPath, 3100);
+    if (baseline.passed || !expectedCrmFailure(baseline.output)) {
+      throw new Error(`CF-1 baseline 未命中预期旧故障签名:\n${baseline.output.slice(-8000)}`);
+    }
+    const fixed = runCrmVersion(fixedWorktree, testPath, 3101);
+    if (!fixed.passed) throw new Error(`CF-1 fixed commit 测试失败:\n${fixed.output.slice(-8000)}`);
+
+    return {
+      schema_version: 1.1,
+      level: 'CF-1',
+      baseline_failed: true,
+      fixed_passed: true,
+      test_sha256: testSha,
+      observed_failure_signature: packet.counterfactual?.expected_failure_signature,
+      reason_code: packet.counterfactual?.reason_code,
+    };
+  } finally {
+    run('git', ['-C', candidateRoot, 'worktree', 'remove', '--force', baseWorktree], candidateRoot, env);
+    run('git', ['-C', candidateRoot, 'worktree', 'remove', '--force', fixedWorktree], candidateRoot, env);
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function main(): void {
+  const packetPath = arg('--packet');
+  if (!packetPath) throw new Error('缺 --packet');
+  const result = runAdapter(packetPath);
+  if (!result) process.exit(0);
+  mkdirSync('artifacts', { recursive: true });
+  const serialized = JSON.stringify(result, null, 2);
+  writeFileSync('artifacts/counterfactual.json', serialized);
+  console.log(serialized);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try { main(); } catch (error) { console.error((error as Error).message); process.exit(1); }
+}
+
+export { expectedCrmFailure, safeRelativePath };
