@@ -97,10 +97,13 @@ function runCrmVersion(worktree: string, testPath: string, port: number): { pass
   const env = cleanEnv(`http://127.0.0.1:${port}`);
   runChecked('npm', ['ci', '--prefix', 'testing/acceptance'], worktree, env);
   runChecked('npm', ['ci', '--prefix', 'frontend'], worktree, env);
-  runChecked('npm', ['run', 'build', '--prefix', 'frontend'], worktree, env);
-  const server = spawn('npm', ['run', 'start', '--prefix', 'frontend', '--', '-p', String(port)], {
+  // CF-1 is a route-level counterfactual. A full production build would
+  // compile unrelated legacy routes and can fail before the target page is
+  // exercised. Start the development server instead so Next compiles only
+  // the requested route while preserving the exact application commit.
+  const server = spawn('npm', ['run', 'dev', '--prefix', 'frontend', '--', '-p', String(port)], {
     cwd: worktree,
-    env,
+    env: { ...env, NODE_ENV: 'development' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   try {
