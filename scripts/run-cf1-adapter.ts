@@ -186,9 +186,10 @@ function main(): void {
   if (!packetPath) throw new Error('缺 --packet');
   const result = runAdapter(packetPath);
   if (!result) process.exit(0);
-  mkdirSync('artifacts', { recursive: true });
+  const artifactsDir = join(process.env.GITHUB_WORKSPACE || process.cwd(), 'artifacts');
+  mkdirSync(artifactsDir, { recursive: true });
   const serialized = JSON.stringify(result, null, 2);
-  writeFileSync('artifacts/counterfactual.json', serialized);
+  writeFileSync(join(artifactsDir, 'counterfactual.json'), serialized);
   console.log(serialized);
 }
 
