@@ -62,6 +62,16 @@ function copyAcceptanceHarness(candidateRoot: string, worktree: string): void {
   }
 }
 
+function copyFrontendHarness(candidateRoot: string, worktree: string): void {
+  for (const file of ['frontend/package.json', 'frontend/package-lock.json']) {
+    const source = join(candidateRoot, file);
+    const destination = join(worktree, file);
+    if (!existsSync(source)) throw new Error(`fixed commit 缺少 frontend harness file: ${file}`);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(source, destination);
+  }
+}
+
 function cleanEnv(baseUrl: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -157,6 +167,11 @@ function runAdapter(packetPath: string): Record<string, unknown> | undefined {
     // in both worktrees, while keeping the application source at each exact SHA.
     copyAcceptanceHarness(candidateRoot, baseWorktree);
     copyAcceptanceHarness(candidateRoot, fixedWorktree);
+    // Keep the frontend dependency/toolchain stable across the two exact
+    // application snapshots so a legacy package manifest cannot prevent the
+    // counterfactual route from starting.
+    copyFrontendHarness(candidateRoot, baseWorktree);
+    copyFrontendHarness(candidateRoot, fixedWorktree);
 
     const baseline = runCrmVersion(baseWorktree, testPath, 3100);
     if (baseline.passed || !expectedCrmFailure(baseline.output)) {
