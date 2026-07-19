@@ -117,6 +117,9 @@ function runCrmVersion(worktree: string, testPath: string, port: number): { pass
     NODE_PATH: join(worktree, 'testing/acceptance/node_modules'),
   };
   runChecked('npm', ['ci', '--prefix', 'testing/acceptance'], worktree, env);
+  // Install the browser matching the locked acceptance harness version, not
+  // whatever npm exec may resolve before dependencies are installed.
+  runChecked('npm', ['--prefix', 'testing/acceptance', 'exec', '--', 'playwright', 'install', 'chromium'], worktree, env);
   runChecked('npm', ['ci', '--prefix', 'frontend'], worktree, env);
   // The acceptance harness is the single trusted Playwright runtime. Remove
   // the app's duplicate copy so config and test files cannot load two runners.
