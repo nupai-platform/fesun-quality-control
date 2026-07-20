@@ -1,0 +1,29 @@
+# FESUN official acceptance-gate caller (runnable, non-template).
+# Pinned to the exact release 1.1.0 commit SHA so it satisfies the QC
+# workflow supply-chain checker (scripts/validate-workflows.ts):
+#   - full 40-hex commit SHA pin
+#   - no branch/tag ref pin
+# Copy into a business repository as .github/workflows/acceptance-gate.yml.
+name: acceptance-gate
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+jobs:
+  acceptance-gate:
+    uses: houzhenying226-jpg/fesun-quality-control/.github/workflows/reusable-pr-gate.yml@98788c7ab8c6fbe32d47225f79f3e220d79c81ce
+    with:
+      project: nupai-crm
+      bug_packet_path: testing/acceptance/current/bug-packet.yaml
+      test_glob: testing/acceptance/current/**/*.spec.ts
+      environment_id: crm-staging
+      base_sha: ${{ github.event.pull_request.base.sha }}
+      head_sha: ${{ github.event.pull_request.head.sha }}
+    secrets:
+      E2E_BASE_URL: ${{ secrets.CRM_E2E_BASE_URL }}
+      E2E_USERNAME: ${{ secrets.CRM_E2E_USERNAME }}
+      E2E_PASSWORD: ${{ secrets.CRM_E2E_PASSWORD }}
+      E2E_READ_TOKEN: ${{ secrets.CRM_E2E_READ_TOKEN }}
+      E2E_ALLOWED_HOSTS: ${{ secrets.CRM_E2E_ALLOWED_HOSTS }}
+      QC_ALERT_WEBHOOK_URL: ${{ secrets.FESUN_QC_ALERT_WEBHOOK_URL }}
